@@ -101,6 +101,59 @@ Results land in `results/<task-id>.md`.
 
 ---
 
+## Multiple subscriptions
+
+Each persona declares which `claude` binary it runs under. This lets you split tasks across different Claude accounts — for example, keeping personal and work subscriptions separate.
+
+**1. Create a named CLI profile for each account**
+
+Claude Code supports multiple profiles via `claude config`. Create one per subscription:
+
+```bash
+claude config set --profile work account.email you@company.com
+claude config set --profile personal account.email you@personal.com
+```
+
+Each profile stores its own authentication. Switch with `claude --profile <name>`, or wrap it in a shell alias:
+
+```bash
+# ~/.bashrc or ~/.zshrc
+alias claude-work='claude --profile work'
+alias claude-personal='claude --profile personal'
+```
+
+**2. Point `.env` at the right binaries**
+
+```bash
+# .env
+CLAUDE_BIN=claude-personal      # default for personal tasks
+CLAUDE_BIN_WORK=claude-work     # used for work repos
+```
+
+**3. Set the default and work binary in `fleet.config.yml`**
+
+```yaml
+claude_bin: claude-personal     # fallback for all personas
+
+work_repo_prefix: app,api       # these repos use CLAUDE_BIN_WORK
+```
+
+**4. Override per persona if needed**
+
+Edit `personas/<name>/config.json` to pin a specific binary for that persona:
+
+```json
+{
+  "bin": "claude-work",
+  "workspace": "repo-ro",
+  "model": "sonnet"
+}
+```
+
+Guard enforces the mapping: if a task touches a `work_repo_prefix` repo but the persona's `bin` is the personal binary, the session is killed and the task is set to `blocked`.
+
+---
+
 ## Personas
 
 | Persona | Use for | Workspace | Model |
