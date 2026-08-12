@@ -9,11 +9,9 @@ HOST=$(config_get "host" "${FLEET_HOST:-$(hostname -s)}")
 MAX_SESSIONS=$(config_get "budget.max_sessions_per_day" "25")
 BUDGET_TOKENS=$(config_get "budget.daily_budget_tokens" "")
 BUDGET_USD=$(config_get "budget.daily_budget_usd" "")
-WARN_PCT=$(config_get "budget.warn_at_percent" "80")
 CLAUDE_BIN=$(config_get "claude_bin" "${CLAUDE_BIN:-claude}")
 WORK_PREFIXES=$(config_get "work_repo_prefix" "")
 PERSONAS_DIR="${FLEET_ROOT}/personas"
-REPOS_ROOT=$(config_get "repos_root" "${FLEET_ROOT}/../fleet-repos")
 
 killed=0
 orphans=0
@@ -28,22 +26,24 @@ if [[ -f "${USAGE_CSV}" ]]; then
   sessions_today=$(grep -c "^${today}" "${USAGE_CSV}" 2>/dev/null || true)
 fi
 
-# Current running sessions.
-running=$(tmux_running_count)
+# Kill all running fleet sessions and return count killed.
+kill_all_sessions() {
+  local n=0
+  while IFS= read -r s; do
+    tmux kill-session -t "${s}" 2>/dev/null && (( n++ )) || true
+  done < <(tmux ls 2>/dev/null | grep "^fleet-" | awk -F: '{print $1}')
+  echo "${n}"
+}
 
 # --- Session count cap ---
 if (( sessions_today >= MAX_SESSIONS )); then
-  tmux ls 2>/dev/null | grep "^fleet-" | awk -F: '{print $1}' | while read -r s; do
-    tmux kill-session -t "${s}" 2>/dev/null || true
-    (( killed++ )) || true
-  done
-  killed=$(tmux_running_count)
+  killed=$(kill_all_sessions)
   log_heartbeat "guard" "3" "killed=${killed}" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
   exit 3
 fi
 
 # --- Token budget cap ---
-if [[ -n "${BUDGET_TOKENS}" ]]; then
+if [[ -n "${BUDGET_TOKENS}" && "${BUDGET_TOKENS}" -gt 0 ]]; then
   tokens_today=0
   if [[ -f "${USAGE_CSV}" ]]; then
     tokens_today=$(awk -F',' -v d="${today}" '
@@ -53,10 +53,8 @@ if [[ -n "${BUDGET_TOKENS}" ]]; then
   fi
   budget_status="${tokens_today}/${BUDGET_TOKENS}"
   if (( tokens_today >= BUDGET_TOKENS )); then
-    tmux ls 2>/dev/null | grep "^fleet-" | awk -F: '{print $1}' | while read -r s; do
-      tmux kill-session -t "${s}" 2>/dev/null || true
-    done
-    log_heartbeat "guard" "3" "killed=all" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
+    killed=$(kill_all_sessions)
+    log_heartbeat "guard" "3" "killed=${killed}" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
     exit 3
   fi
 elif [[ -n "${BUDGET_USD}" ]]; then
@@ -90,7 +88,7 @@ for task_file in "${TASKS_DIR}"/*.md; do
   fi
 done
 
-# --- Credential mismatch: work repo on personal binary ---
+# --- Credential mismatch: work repo on wrong binary ---
 if [[ -n "${WORK_PREFIXES}" ]]; then
   IFS=',' read -ra WP <<< "${WORK_PREFIXES}"
   for task_file in "${TASKS_DIR}"/*.md; do
@@ -110,9 +108,8 @@ if [[ -n "${WORK_PREFIXES}" ]]; then
     for wp in "${WP[@]}"; do
       if [[ "${repo}" == "${wp}" && "${persona_bin}" == "${CLAUDE_BIN}" ]]; then
         session_name="fleet-${task_id}"
-        tmux kill-session -t "${session_name}" 2>/dev/null || true
+        tmux kill-session -t "${session_name}" 2>/dev/null && (( killed++ )) || true
         "${SCRIPT_DIR}/task-set" "${task_file}" "status" "blocked"
-        (( killed++ )) || true
         exit_code=2
         break
       fi

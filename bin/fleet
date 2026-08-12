@@ -113,14 +113,25 @@ adapters)
 
 cron)
   echo "=== installed schedule ==="
-  if command -v crontab &>/dev/null; then
-    crontab -l 2>/dev/null | grep "fleet" || echo "  (no fleet cron jobs)"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    PLIST_DIR="${HOME}/Library/LaunchAgents"
+    found=0
+    for job in spawn guard intake kb-sync; do
+      plist="${PLIST_DIR}/com.fleet.${job}.plist"
+      if [[ -f "${plist}" ]]; then
+        echo "  launchd: com.fleet.${job}"
+        found=1
+      fi
+    done
+    (( found == 0 )) && echo "  (no fleet launchd agents — run ./install)"
+  elif command -v crontab &>/dev/null; then
+    crontab -l 2>/dev/null | grep -E "^(FLEET_ROOT|.*/fleet/)" || echo "  (no fleet cron jobs — run ./install)"
   else
     echo "  (crontab not available)"
   fi
   echo ""
   echo "=== last 5 runs per job ==="
-  for job in spawn guard; do
+  for job in spawn guard intake kb-sync; do
     echo "  --- ${job} ---"
     grep "^.\{26\} ${job} " "${LOG_FILE}" 2>/dev/null | tail -5 | sed 's/^/  /' || echo "  (no entries)"
   done
@@ -160,7 +171,7 @@ budget)
   sessions_today=0
   [[ -f "${USAGE_CSV}" ]] && sessions_today=$(grep -c "^${today}" "${USAGE_CSV}" 2>/dev/null || true)
   echo "sessions today: ${sessions_today} / ${MAX_SESSIONS}"
-  if [[ -n "${BUDGET_TOKENS}" ]]; then
+  if [[ -n "${BUDGET_TOKENS}" && "${BUDGET_TOKENS}" -gt 0 ]]; then
     tokens=0
     [[ -f "${USAGE_CSV}" ]] && tokens=$(awk -F',' -v d="${today}" '
       $1 ~ d { sum += $4 + $5 }
@@ -207,11 +218,17 @@ doctor)
     fi
   done
 
-  # Cron installed
-  if command -v crontab &>/dev/null && crontab -l 2>/dev/null | grep -q "fleet"; then
-    ok "cron: fleet jobs installed"
+  # Schedule installed (cron on Linux, launchd on macOS)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ -f "${HOME}/Library/LaunchAgents/com.fleet.spawn.plist" ]]; then
+      ok "schedule: launchd agents installed"
+    else
+      warn "schedule: no launchd agents found (run ./install)"
+    fi
+  elif command -v crontab &>/dev/null && crontab -l 2>/dev/null | grep -qE "fleet/(spawn|guard)"; then
+    ok "schedule: cron jobs installed"
   else
-    warn "cron: no fleet jobs found (run ./install)"
+    warn "schedule: no cron jobs found (run ./install)"
   fi
 
   # Adapters (last exit codes)

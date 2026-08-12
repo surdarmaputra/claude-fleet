@@ -26,7 +26,8 @@ for bin in tmux python3; do
 done
 
 # Make all bin/* executable.
-chmod +x "${BIN}"/{fleet,spawn,guard,task-set,now,report,kb-sync}
+chmod +x "${BIN}"/{fleet,spawn,guard,task-set,now,report,kb-sync,intake}
+chmod +x "${BIN}"/hooks/{session-end,on-stop,notify}
 ok "bin/* executable"
 
 mkdir -p "${FLEET_ROOT}/logs" "${FLEET_ROOT}/results" "${FLEET_ROOT}/tasks" \
@@ -49,7 +50,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
   PLIST_DIR="${HOME}/Library/LaunchAgents"
   mkdir -p "${PLIST_DIR}"
 
-  for job in spawn guard; do
+  for job in spawn guard intake kb-sync; do
     plist="${PLIST_DIR}/com.fleet.${job}.plist"
     interval=300  # default 5 min
 
@@ -65,6 +66,11 @@ if [[ "$(uname)" == "Darwin" ]]; then
   <array>
     <string>${BIN}/${job}</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FLEET_ROOT</key>
+    <string>${FLEET_ROOT}</string>
+  </dict>
   <key>StartInterval</key>
   <integer>${interval}</integer>
   <key>StandardOutPath</key>
@@ -80,20 +86,23 @@ PLIST
   done
 else
   # Linux: use crontab.
+  # FLEET_ROOT is exported so hook scripts resolve paths correctly
+  # regardless of the working directory the cron job runs in.
   TMP=$(mktemp)
   crontab -l 2>/dev/null | grep -v "fleet/" > "${TMP}" || true
   cat >> "${TMP}" <<CRON
-${SPAWN_SCHED}  ${BIN}/spawn  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
-${GUARD_SCHED}  ${BIN}/guard  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
-${INTAKE_SCHED} ${BIN}/fleet adapters >> /dev/null 2>&1
-${KB_SCHED}     ${BIN}/kb-sync >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+FLEET_ROOT=${FLEET_ROOT}
+${SPAWN_SCHED}   ${BIN}/spawn   >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${GUARD_SCHED}   ${BIN}/guard   >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${INTAKE_SCHED}  ${BIN}/intake  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${KB_SCHED}      ${BIN}/kb-sync >> ${FLEET_ROOT}/logs/fleet.log 2>&1
 CRON
   crontab "${TMP}"
   rm "${TMP}"
   ok "cron: jobs installed"
   echo ""
   echo "Active schedule:"
-  crontab -l | grep "fleet/"
+  crontab -l | grep -E "^(FLEET_ROOT|.*/fleet/)"
 fi
 
 echo ""

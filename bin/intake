@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run all fetch-type intake adapters. Called by cron on the intake schedule.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+errors=0
+
+for adapter in "${FLEET_ROOT}/intake/adapters"/*/fetch; do
+  [[ -x "${adapter}" ]] || continue
+  name=$(basename "$(dirname "${adapter}")")
+  log_file="${FLEET_ROOT}/logs/intake-${name}.log"
+  if ! "${adapter}" >> "${log_file}" 2>&1; then
+    echo "intake: adapter ${name} exited with error" >&2
+    (( errors++ )) || true
+  fi
+done
+
+exit_code=$(( errors > 0 ? 2 : 0 ))
+log_heartbeat "intake" "${exit_code}" "errors=${errors}"
+exit "${exit_code}"

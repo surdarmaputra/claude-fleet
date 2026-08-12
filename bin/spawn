@@ -52,7 +52,6 @@ for task_file in "${CANDIDATES[@]}"; do
   [[ -f "${task_file}" ]] || continue
 
   task_id=$(task_get "${task_file}" "id")
-  persona=$(task_get "${task_file}" "id")
   persona=$(task_get "${task_file}" "persona")
   workspace=$(task_get "${task_file}" "workspace")
   repo=$(task_get "${task_file}" "repo")
@@ -87,13 +86,17 @@ for task_file in "${CANDIDATES[@]}"; do
     worktree)
       ws_path="${REPOS_ROOT}/.worktrees/${task_id}"
       mkdir -p "${ws_path}"
-      # Coder: create git worktree if repo is set.
       if [[ -n "${repo}" && -d "${REPOS_ROOT}/${repo}/.git" ]]; then
         git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" -b "agent/${task_id}" 2>/dev/null || true
       fi
       ;;
     repo-ro)
-      ws_path="${REPOS_ROOT}/${repo:-}"
+      if [[ -z "${repo}" ]]; then
+        echo "spawn: repo-ro workspace requires a repo field, skipping ${task_id}" >&2
+        "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+        continue
+      fi
+      ws_path="${REPOS_ROOT}/${repo}"
       ;;
     scratch|*)
       ws_path="${SCRATCH_DIR}/${task_id}"
@@ -105,11 +108,6 @@ for task_file in "${CANDIDATES[@]}"; do
   log_file="${FLEET_ROOT}/logs/agent-${task_id}.log"
   prompt_file="${persona_dir}/prompt.md"
   result_file="${RESULTS_DIR}/${task_id}.md"
-
-  # Build claude command.
-  # Pass system prompt and task content, write output to result file.
-  cmd="${persona_bin} --print"
-  [[ -f "${prompt_file}" ]] && cmd="${cmd} --system-prompt-file '${prompt_file}'"
 
   launch_script="${SCRATCH_DIR}/${task_id}/.launch.sh"
   mkdir -p "${SCRATCH_DIR}/${task_id}"
@@ -124,13 +122,17 @@ TASK_BODY=\$(awk '/^---$/{n++} n==2{found=1; next} found{print}' "${task_file}")
 echo "## Round \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${result_file}"
 echo "" >> "${result_file}"
 
-${persona_bin} --print \
-  ${FLEET_ROOT}/personas/${persona}/prompt.md \
-  "\${TASK_BODY}" >> "${result_file}" 2>>"${log_file}" || true
+SYSTEM_PROMPT=\$(cat "${prompt_file}" 2>/dev/null || true)
 
-# Update task status to done on success.
-"${SCRIPT_DIR}/task-set" "${task_file}" "status" "done"
-echo "agent: task ${task_id} done" >> "${log_file}"
+if "${persona_bin}" --print \
+    --system-prompt "\${SYSTEM_PROMPT}" \
+    "\${TASK_BODY}" >> "${result_file}" 2>>"${log_file}"; then
+  "${SCRIPT_DIR}/task-set" "${task_file}" "status" "done"
+  echo "agent: task ${task_id} done" >> "${log_file}"
+else
+  "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+  echo "agent: task ${task_id} failed, reset to todo" >> "${log_file}"
+fi
 LAUNCH
   chmod +x "${launch_script}"
 
