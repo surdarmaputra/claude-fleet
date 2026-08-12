@@ -82,20 +82,37 @@ for task_file in "${CANDIDATES[@]}"; do
   "${SCRIPT_DIR}/task-set" "${task_file}" "status" "doing"
 
   # Resolve workspace path.
+  # Helpers for repo-requiring workspaces.
+  _require_repo() {
+    local mode="${1}"
+    if [[ -z "${repo}" ]]; then
+      echo "spawn: ${mode} workspace requires a repo field, skipping ${task_id}" >&2
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+      return 1
+    fi
+    if [[ ! -d "${REPOS_ROOT}/${repo}/.git" ]]; then
+      echo "spawn: repo '${repo}' not found at ${REPOS_ROOT}/${repo} — clone it first, skipping ${task_id}" >&2
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+      return 1
+    fi
+    return 0
+  }
+
   case "${workspace}" in
     worktree)
+      _require_repo "worktree" || continue
       ws_path="${REPOS_ROOT}/.worktrees/${task_id}"
       mkdir -p "${ws_path}"
-      if [[ -n "${repo}" && -d "${REPOS_ROOT}/${repo}/.git" ]]; then
-        git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" -b "agent/${task_id}" 2>/dev/null || true
-      fi
+      git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" -b "agent/${task_id}" 2>/dev/null \
+        || git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" 2>/dev/null || true
+      ;;
+    repo)
+      # Direct access to the repo — no branch isolation. Use for lightweight tasks.
+      _require_repo "repo" || continue
+      ws_path="${REPOS_ROOT}/${repo}"
       ;;
     repo-ro)
-      if [[ -z "${repo}" ]]; then
-        echo "spawn: repo-ro workspace requires a repo field, skipping ${task_id}" >&2
-        "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
-        continue
-      fi
+      _require_repo "repo-ro" || continue
       ws_path="${REPOS_ROOT}/${repo}"
       ;;
     scratch|*)

@@ -1,9 +1,7 @@
 # claude-fleet
 
-A personal Claude Code agent fleet. Cron spawns Claude sessions from a markdown task board; you review the output.
+A personal Claude Code agent fleet. You write task files; cron spawns Claude sessions; results land in `results/`.
 
-**Volume:** 10–15 tasks/day, 3 concurrent sessions.
-**Cost:** $0 incremental on an existing Claude subscription.
 **Hard rule:** only you can trigger a Claude invocation.
 
 ---
@@ -11,14 +9,12 @@ A personal Claude Code agent fleet. Cron spawns Claude sessions from a markdown 
 ## Prerequisites
 
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude` in PATH)
-- `tmux` and `python3` installed
+- `tmux` and `python3`
 - Linux, macOS, or WSL2
 
 ---
 
-## Quickstart
-
-**1. Clone and configure**
+## Setup
 
 ```bash
 git clone https://github.com/surdarmaputra/claude-fleet
@@ -26,173 +22,176 @@ cd claude-fleet
 
 cp fleet.config.yml.example fleet.config.yml
 cp .env.example .env
-```
 
-Edit `fleet.config.yml` — at minimum set your machine label:
-
-```yaml
-host: my-laptop        # identifies this machine in multi-host setups
-repos_root: ../fleet-repos   # where your git repos live
-```
-
-**2. Install**
-
-```bash
+# Edit fleet.config.yml — set host and repos_root at minimum
 ./install
-```
-
-Checks prerequisites, makes `bin/` executable, and installs cron jobs (or launchd on macOS). Confirm with:
-
-```bash
 bin/fleet doctor
 ```
 
-Expected output for a fresh install: all OK except `budget: daily_budget_tokens unset` — that's intentional for week 1.
+`fleet doctor` will report WARN for `budget: unset` — that's expected until you have a week of usage data. Everything else should be OK.
 
-**3. Add your repos**
-
-Repos live outside the project. Create the repos root and clone whatever you need:
-
-```bash
-mkdir -p ../fleet-repos
-git clone git@gitlab.com:your-org/app ../fleet-repos/app
-```
-
-**4. Create a task**
-
-Copy the example and drop it in `tasks/`:
-
-```bash
-cp examples/task-mr-1204.md tasks/mr-1204.md
-```
-
-Edit the file — the frontmatter controls everything:
-
-```markdown
 ---
-id: mr-1204
+
+## Three workflows ready to use
+
+### 1. General / brainstorm task
+
+No repo needed. Claude writes output to `results/<id>.md`.
+
+```bash
+cat > tasks/brainstorm-001.md << 'EOF'
+---
+id: brainstorm-001
+status: todo
+persona: general
+priority: normal
+workspace: scratch
+---
+Brainstorm 10 product ideas for a developer productivity tool that works
+offline. For each idea include: the problem it solves, who pays for it,
+and one technical risk.
+EOF
+
+bin/fleet now
+```
+
+Result appears in `results/brainstorm-001.md`.
+
+---
+
+### 2. Code review task
+
+Claude reads the repo and produces a structured findings report.
+
+```bash
+# Clone the repo into repos_root first (default: ../fleet-repos)
+git clone git@github.com:your-org/app ../fleet-repos/app
+
+cat > tasks/review-pr-42.md << 'EOF'
+---
+id: review-pr-42
 status: todo
 persona: reviewer
 priority: normal
 workspace: repo-ro
 repo: app
-host: my-laptop
 ---
-Review MR 1204. Focus: migration safety, N+1 queries.
-```
+Review the diff on branch feature/add-payments against main.
 
-**5. Trigger immediately**
+  git diff main..feature/add-payments
 
-```bash
+Focus: data integrity, missing validation, N+1 queries.
+EOF
+
 bin/fleet now
 ```
 
-Or wait — cron picks up `todo` tasks every 5 minutes during work hours.
-
-**6. Check status**
-
-```bash
-bin/fleet tasks          # all tasks grouped by status
-bin/fleet agents         # running tmux sessions
-bin/fleet logs           # last 5 heartbeat lines
-```
-
-Results land in `results/<task-id>.md`.
+Result in `results/review-pr-42.md` — one block per file with labelled findings.
 
 ---
 
-## Multiple subscriptions
+### 3. Coding task
 
-Each persona declares which `claude` binary it runs under. This lets you split tasks across different Claude accounts — for example, keeping personal and work subscriptions separate.
+Claude works on an isolated git worktree (its own branch), commits its changes, and reports what it did.
 
-**1. Create a named CLI profile for each account**
+```bash
+git clone git@github.com:your-org/app ../fleet-repos/app
 
-Claude Code supports multiple profiles via `claude config`. Create one per subscription:
+cat > tasks/code-001.md << 'EOF'
+---
+id: code-001
+status: todo
+persona: coder
+priority: normal
+workspace: worktree
+repo: app
+---
+Add input validation to the user registration endpoint.
+
+- Email must match RFC 5322 format
+- Password must be at least 12 characters
+- Return 422 with a structured error body on failure
+- Add a test for each validation rule
+
+The endpoint is in src/controllers/auth.rb around line 45.
+EOF
+
+bin/fleet now
+```
+
+Claude commits its changes on branch `agent/code-001`. Review with:
+
+```bash
+cd ../fleet-repos/app
+git diff main..agent/code-001
+```
+
+---
+
+## Multiple Claude accounts (optional)
+
+If you have separate personal and work subscriptions, create named CLI profiles:
 
 ```bash
 claude config set --profile work account.email you@company.com
 claude config set --profile personal account.email you@personal.com
-```
 
-Each profile stores its own authentication. Switch with `claude --profile <name>`, or wrap it in a shell alias:
-
-```bash
-# ~/.bashrc or ~/.zshrc
+# Shell aliases (add to ~/.bashrc or ~/.zshrc)
 alias claude-work='claude --profile work'
-alias claude-personal='claude --profile personal'
 ```
 
-**2. Set the default binary in `fleet.config.yml`**
-
-```yaml
-claude_bin: claude-personal     # fallback when a persona doesn't set its own bin
-
-work_repo_prefix: app,api       # guard enforces the right binary on these repos
-```
-
-**3. Override per persona**
-
-Edit `personas/<name>/config.json` to pin a specific binary for that persona:
+Then override the binary per persona in `personas/<name>/config.json`:
 
 ```json
-{
-  "bin": "claude-work",
-  "workspace": "repo-ro",
-  "model": "sonnet"
-}
+{ "bin": "claude-work" }
 ```
 
-Guard enforces the mapping: if a task touches a `work_repo_prefix` repo but the persona's `bin` matches the global `claude_bin` fallback instead of a dedicated binary, the session is killed and the task is set to `blocked`.
+And set `work_repo_prefix` in `fleet.config.yml` so guard can enforce the mapping:
+
+```yaml
+work_repo_prefix: app,api
+```
+
+Guard kills any session where a work repo runs under the default binary.
 
 ---
 
-## Personas
+## Task reference
 
-| Persona | Use for | Workspace | Model |
-|---|---|---|---|
-| `reviewer` | Code review | `repo-ro` (read-only) | sonnet |
-| `coder` | Implementation | `worktree` (own branch) | opus |
-| `prod-support` | Incident investigation | `scratch` | opus |
-| `planner` | Feature breakdown | `scratch` | sonnet |
+**Frontmatter fields:**
 
-Persona prompts and permissions live in `personas/<name>/`.
+| Field | Values | Notes |
+|---|---|---|
+| `id` | any slug | must be unique |
+| `status` | `todo` `doing` `done` `blocked` | only mutate via `bin/task-set` |
+| `persona` | `general` `reviewer` `coder` `prod-support` `planner` | |
+| `priority` | `high` `normal` | high tasks claimed first |
+| `workspace` | `scratch` `repo-ro` `repo` `worktree` | see below |
+| `repo` | folder name under `repos_root` | required for repo workspaces |
+| `host` | machine label | omit to run on any host |
 
----
+**Workspace modes:**
 
-## Task lifecycle
+| Mode | Persona | Behaviour |
+|---|---|---|
+| `scratch` | general, prod-support, planner | empty dir, no repo access |
+| `repo-ro` | reviewer | runs inside the repo, write tools denied |
+| `repo` | coder | runs inside the repo, write tools allowed, no branch isolation |
+| `worktree` | coder | isolated git worktree on branch `agent/<id>`, write tools allowed |
+
+**Task lifecycle:**
 
 ```
 todo → doing → done
-           ↓ (on failure, up to 3 attempts)
+           ↓ session crash, up to 3 attempts
          todo → blocked
 ```
 
-Guard runs every 5 minutes. Crashed sessions are automatically re-queued; after 3 failures the task is set to `blocked`.
-
-To re-run a done task or add feedback, append a `## Feedback` section and set `status: todo`.
+To add feedback and re-run: append a `## Feedback` section and set `status: todo`.
 
 ---
 
-## Budget
-
-Week 1: only the session count cap is active (`max_sessions_per_day: 25`).
-
-After one week of data, set a token cap:
-
-```bash
-bin/fleet usage --since 7d   # see tokens per task
-```
-
-Then in `fleet.config.yml`:
-
-```yaml
-budget:
-  daily_budget_tokens: 3000000   # median_per_task × tasks_per_day × 1.3
-```
-
----
-
-## CLI reference
+## CLI
 
 ```
 fleet tasks   [--status todo|doing|done|blocked] [--persona <p>] [--host <h>]
@@ -206,4 +205,39 @@ fleet doctor
 fleet now
 ```
 
-Exit codes: `0` ok · `2` degraded (a check failed, fleet still runs) · `3` fleet stopped by guard.
+Exit codes: `0` ok · `2` degraded (fleet still runs) · `3` stopped by guard.
+
+---
+
+## What works now vs later phases
+
+| Capability | Status |
+|---|---|
+| General / brainstorm tasks | ✅ Ready |
+| Code review tasks | ✅ Ready |
+| Coding tasks (worktree) | ✅ Ready |
+| Prod-support / incident tasks | ✅ Ready |
+| Cron automation + guard | ✅ Ready |
+| Token budget tracking (`fleet usage`) | 🔜 Phase 3 — needs usage.csv wiring |
+| Lark notifications | 🔜 Phase 4 |
+| Lark bot intake (auto-create tasks) | 🔜 Phase 4 |
+| GitLab MR / Jira intake | 🔜 Phase 5 |
+| KB sync | 🔜 Phase 5 |
+| Coder multi-phase orchestration | 🔜 Phase 5 |
+
+---
+
+## Budget
+
+Week 1: only `max_sessions_per_day: 25` is active. After one week:
+
+```bash
+bin/fleet usage --since 7d
+```
+
+Set the result in `fleet.config.yml`:
+
+```yaml
+budget:
+  daily_budget_tokens: 3000000   # median_tokens_per_task × tasks_per_day × 1.3
+```

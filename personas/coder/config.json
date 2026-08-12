@@ -1,5 +1,5 @@
 {
-  "bin": "claude-work",
+  "bin": "claude",
   "workspace": "worktree",
   "model": "opus",
   "permissions": {
