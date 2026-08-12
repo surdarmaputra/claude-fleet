@@ -1,0 +1,26 @@
+{
+  "bin": "claude",
+  "workspace": "repo-ro",
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)"
+    ],
+    "deny": [
+      "Write",
+      "Edit",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(glab:*)",
+      "Bash(gh:*)",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}

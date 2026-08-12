@@ -1,0 +1,32 @@
+{
+  "bin": "claude-work",
+  "workspace": "worktree",
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Grep",
+      "Glob",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git checkout:*)",
+      "Bash(npm:*)",
+      "Bash(yarn:*)",
+      "Bash(pnpm:*)",
+      "Bash(bundle:*)",
+      "Bash(make:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(glab:*)",
+      "Bash(gh:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)"
+    ]
+  }
+}

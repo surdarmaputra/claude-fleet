@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+// Long-lived Lark bot daemon. Receives owner messages, creates task files.
+// Phase 4 implementation. Stub only.
+// May not call any Claude binary. See RFC-001 §5.12.
+
+const { LARK_APP_ID, LARK_APP_SECRET, LARK_ALLOWLIST_OPEN_ID } = process.env;
+
+if (!LARK_APP_ID || !LARK_APP_SECRET) {
+  console.error('lark-bot: LARK_APP_ID / LARK_APP_SECRET not set, exiting');
+  process.exit(0);
+}
+
+console.error('lark-bot: adapter not yet implemented (phase 4)');
+process.exit(0);

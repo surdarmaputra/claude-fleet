@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Notification hook: send outbound Lark webhook if configured.
+# Input from stdin: JSON notification payload from Claude Code.
+set -euo pipefail
+
+FLEET_ROOT="${FLEET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+ENV_FILE="${FLEET_ROOT}/.env"
+[[ -f "${ENV_FILE}" ]] && set -a && source "${ENV_FILE}" && set +a
+
+[[ -z "${LARK_WEBHOOK_URL:-}" ]] && exit 0
+
+PAYLOAD=$(cat)
+TITLE=$(echo "${PAYLOAD}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('title','Fleet notification'))" 2>/dev/null || echo "Fleet notification")
+MESSAGE=$(echo "${PAYLOAD}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message',''))" 2>/dev/null || echo "${PAYLOAD}")
+
+curl -s -X POST "${LARK_WEBHOOK_URL}" \
+  -H "Content-Type: application/json" \
+  -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"[fleet] ${TITLE}: ${MESSAGE}\"}}" \
+  > /dev/null

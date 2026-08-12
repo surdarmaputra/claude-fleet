@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Intake adapter: poll GitLab for MRs assigned to owner. Idempotent.
+# Phase 5 implementation. Stub only.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${FLEET_ROOT}/bin/lib.sh"
+
+[[ -z "${GITLAB_BASE_URL:-}" ]] && { echo "gitlab-mr: GITLAB_BASE_URL not set, skipping"; exit 0; }
+[[ -z "${GITLAB_TOKEN:-}"    ]] && { echo "gitlab-mr: GITLAB_TOKEN not set, skipping"; exit 0; }
+
+echo "gitlab-mr: adapter not yet implemented (phase 5)"
+log_heartbeat "gitlab-mr" "0" "mrs=0"
+exit 0

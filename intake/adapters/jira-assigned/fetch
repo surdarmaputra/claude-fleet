@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Intake adapter: poll Jira for tickets assigned to owner. Idempotent.
+# Phase 5 implementation. Stub only.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "${FLEET_ROOT}/bin/lib.sh"
+
+[[ -z "${JIRA_BASE_URL:-}"  ]] && { echo "jira-assigned: JIRA_BASE_URL not set, skipping"; exit 0; }
+[[ -z "${JIRA_API_TOKEN:-}" ]] && { echo "jira-assigned: JIRA_API_TOKEN not set, skipping"; exit 0; }
+
+echo "jira-assigned: adapter not yet implemented (phase 5)"
+log_heartbeat "jira-assigned" "0" "tickets=0"
+exit 0

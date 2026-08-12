@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Preflight checks and cron (or launchd on macOS) installation.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${FLEET_ROOT}/fleet.config.yml"
+BIN="${FLEET_ROOT}/bin"
+
+fail() { echo "FAIL  $*" >&2; exit 1; }
+ok()   { echo "OK    $*"; }
+warn() { echo "WARN  $*"; }
+
+echo "=== fleet install ==="
+echo ""
+
+# --- Preflight ---
+echo "--- preflight ---"
+
+[[ -f "${CONFIG_FILE}" ]] || fail "fleet.config.yml not found. Copy from fleet.config.yml.example and edit."
+ok "fleet.config.yml"
+
+[[ -f "${FLEET_ROOT}/.env" ]] || warn ".env not found. Copy from .env.example."
+
+for bin in tmux python3; do
+  command -v "${bin}" &>/dev/null && ok "${bin}" || fail "${bin} not found"
+done
+
+# Make all bin/* executable.
+chmod +x "${BIN}"/{fleet,spawn,guard,task-set,now,report,kb-sync}
+ok "bin/* executable"
+
+mkdir -p "${FLEET_ROOT}/logs" "${FLEET_ROOT}/results" "${FLEET_ROOT}/tasks" \
+  "${FLEET_ROOT}/scratch" "${FLEET_ROOT}/kb/data"
+ok "directories"
+
+# --- Schedule ---
+echo ""
+echo "--- schedule ---"
+
+source "${BIN}/lib.sh"
+
+SPAWN_SCHED=$(config_get "schedule.spawn" "*/5 9-18 * * 1-5")
+GUARD_SCHED=$(config_get "schedule.guard" "*/5 * * * *")
+INTAKE_SCHED=$(config_get "schedule.intake" "*/15 9-18 * * 1-5")
+KB_SCHED=$(config_get "schedule.kb_sync" "0 7 * * 1-5")
+
+if [[ "$(uname)" == "Darwin" ]]; then
+  # macOS: use launchd plist files.
+  PLIST_DIR="${HOME}/Library/LaunchAgents"
+  mkdir -p "${PLIST_DIR}"
+
+  for job in spawn guard; do
+    plist="${PLIST_DIR}/com.fleet.${job}.plist"
+    interval=300  # default 5 min
+
+    cat > "${plist}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.${job}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BIN}/${job}</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>${interval}</integer>
+  <key>StandardOutPath</key>
+  <string>${FLEET_ROOT}/logs/fleet.log</string>
+  <key>StandardErrorPath</key>
+  <string>${FLEET_ROOT}/logs/fleet.log</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "${plist}" 2>/dev/null || true
+    launchctl load "${plist}"
+    ok "launchd: ${job}"
+  done
+else
+  # Linux: use crontab.
+  TMP=$(mktemp)
+  crontab -l 2>/dev/null | grep -v "fleet/" > "${TMP}" || true
+  cat >> "${TMP}" <<CRON
+${SPAWN_SCHED}  ${BIN}/spawn  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${GUARD_SCHED}  ${BIN}/guard  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${INTAKE_SCHED} ${BIN}/fleet adapters >> /dev/null 2>&1
+${KB_SCHED}     ${BIN}/kb-sync >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+CRON
+  crontab "${TMP}"
+  rm "${TMP}"
+  ok "cron: jobs installed"
+  echo ""
+  echo "Active schedule:"
+  crontab -l | grep "fleet/"
+fi
+
+echo ""
+echo "=== install complete ==="
+echo "Run: fleet doctor"

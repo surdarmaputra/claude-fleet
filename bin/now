@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Manual spawn trigger, debounced to at most once per 30 seconds.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+LOCK_FILE="${FLEET_ROOT}/.now.lock"
+DEBOUNCE_SECS=30
+
+if [[ -f "${LOCK_FILE}" ]]; then
+  last=$(cat "${LOCK_FILE}")
+  now_epoch=$(date -u +%s)
+  elapsed=$(( now_epoch - last ))
+  if (( elapsed < DEBOUNCE_SECS )); then
+    echo "now: debounced — ${elapsed}s since last call (min ${DEBOUNCE_SECS}s)" >&2
+    exit 0
+  fi
+fi
+
+date -u +%s > "${LOCK_FILE}"
+exec "${SCRIPT_DIR}/spawn"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Run all enabled KB adapters and regenerate kb/INDEX.md.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+KB_DIR="${FLEET_ROOT}/kb"
+ADAPTERS_DIR="${KB_DIR}/adapters"
+DATA_DIR="${KB_DIR}/data"
+INDEX_FILE="${KB_DIR}/INDEX.md"
+
+errors=0
+
+for adapter in "${ADAPTERS_DIR}"/*/fetch; do
+  [[ -x "${adapter}" ]] || continue
+  name=$(basename "$(dirname "${adapter}")")
+  log_file="${FLEET_ROOT}/logs/kb-${name}.log"
+  echo "kb-sync: running adapter ${name}" >&2
+  if ! "${adapter}" 2>>"${log_file}"; then
+    echo "kb-sync: adapter ${name} exited with error" >&2
+    (( errors++ )) || true
+  fi
+done
+
+# Regenerate INDEX.md
+{
+  echo "# KB Index"
+  echo ""
+  echo "_Generated $(now_ts)_"
+  echo ""
+  for dir in "${DATA_DIR}"/*/; do
+    [[ -d "${dir}" ]] || continue
+    name=$(basename "${dir}")
+    echo "## ${name}"
+    for f in "${dir}"*.md; do
+      [[ -f "${f}" ]] || continue
+      title=$(head -1 "${f}" | sed 's/^# //')
+      echo "- [${title}](${f})"
+    done
+    echo ""
+  done
+} > "${INDEX_FILE}"
+
+exit_code=$(( errors > 0 ? 2 : 0 ))
+log_heartbeat "kb-sync" "${exit_code}" "adapters=$(ls "${ADAPTERS_DIR}" 2>/dev/null | wc -l | tr -d ' ')" "errors=${errors}"
+exit "${exit_code}"
