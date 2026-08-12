@@ -122,23 +122,15 @@ alias claude-work='claude --profile work'
 alias claude-personal='claude --profile personal'
 ```
 
-**2. Point `.env` at the right binaries**
-
-```bash
-# .env
-CLAUDE_BIN=claude-personal      # default for personal tasks
-CLAUDE_BIN_WORK=claude-work     # used for work repos
-```
-
-**3. Set the default and work binary in `fleet.config.yml`**
+**2. Set the default binary in `fleet.config.yml`**
 
 ```yaml
-claude_bin: claude-personal     # fallback for all personas
+claude_bin: claude-personal     # fallback when a persona doesn't set its own bin
 
-work_repo_prefix: app,api       # these repos use CLAUDE_BIN_WORK
+work_repo_prefix: app,api       # guard enforces the right binary on these repos
 ```
 
-**4. Override per persona if needed**
+**3. Override per persona**
 
 Edit `personas/<name>/config.json` to pin a specific binary for that persona:
 
@@ -150,7 +142,7 @@ Edit `personas/<name>/config.json` to pin a specific binary for that persona:
 }
 ```
 
-Guard enforces the mapping: if a task touches a `work_repo_prefix` repo but the persona's `bin` is the personal binary, the session is killed and the task is set to `blocked`.
+Guard enforces the mapping: if a task touches a `work_repo_prefix` repo but the persona's `bin` matches the global `claude_bin` fallback instead of a dedicated binary, the session is killed and the task is set to `blocked`.
 
 ---
 
