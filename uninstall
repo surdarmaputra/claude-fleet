@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Remove claude-fleet system integrations and generated runtime files.
+# Two modes:
+#   ./uninstall           — remove symlink, cron/launchd, and gitignored runtime
+#                           files; leave the repo directory clean and intact.
+#   ./uninstall --purge   — same as above, then delete the entire repo directory.
+set -euo pipefail
+
+# Allow FLEET_ROOT to be overridden by the environment (used by tests).
+FLEET_ROOT="${FLEET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+BIN="${FLEET_ROOT}/bin"
+
+PURGE=false
+FORCE=false
+
+# --- argument parsing ---
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --purge)  PURGE=true;  shift ;;
+    --force)  FORCE=true;  shift ;;
+    -h|--help)
+      cat <<EOF
+Usage: ./uninstall [OPTIONS]
+
+Remove claude-fleet system integrations and generated runtime files.
+
+Options:
+  --purge   Also delete the entire repository directory after uninstalling.
+            Use this when you cloned fleet to the wrong location and want a
+            clean removal before re-cloning elsewhere.
+  --force   Skip all confirmation prompts.
+  -h, --help  Show this message and exit.
+
+Without --purge the repo directory is left clean and intact: only
+gitignored runtime files (.env, fleet.config.local.yml, logs/, tasks/,
+scratch/, usage.csv) and system integrations (symlink, cron / launchd)
+are removed. Git-tracked source files are untouched.
+EOF
+      exit 0
+      ;;
+    *) echo "uninstall: unknown option: ${1}" >&2; exit 1 ;;
+  esac
+done
+
+fail() { echo "FAIL  $*" >&2; }
+ok()   { echo "OK    $*"; }
+info() { echo "      $*"; }
+
+echo "=== fleet uninstall ==="
+echo ""
+
+if [[ "${PURGE}" == true ]]; then
+  echo "  Mode: --purge  (repo directory will be deleted)"
+else
+  echo "  Mode: clean repo  (only runtime files and system integrations removed)"
+fi
+echo ""
+
+# --- confirmation ---
+if [[ "${FORCE}" != true ]]; then
+  if [[ "${PURGE}" == true ]]; then
+    echo "  This will delete ${FLEET_ROOT} and everything in it."
+  else
+    echo "  This will remove the fleet symlink, cron/launchd jobs, and"
+    echo "  gitignored runtime files inside ${FLEET_ROOT}."
+    echo "  Git-tracked source files will not be touched."
+  fi
+  echo ""
+  read -r -p "  Continue? [y/N] " reply
+  [[ "${reply}" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+  echo ""
+fi
+
+# --- 1. symlink ---
+echo "--- symlink ---"
+LOCAL_BIN="${HOME}/.local/bin"
+SYMLINK="${LOCAL_BIN}/fleet"
+if [[ -L "${SYMLINK}" ]]; then
+  target="$(readlink "${SYMLINK}")"
+  if [[ "${target}" == "${BIN}/fleet" || "${target}" == "${FLEET_ROOT}"* ]]; then
+    rm "${SYMLINK}"
+    ok "removed: ${SYMLINK}"
+  else
+    ok "skipped: ${SYMLINK} points elsewhere (${target}) — not ours"
+  fi
+elif [[ -e "${SYMLINK}" ]]; then
+  ok "skipped: ${SYMLINK} exists but is not a symlink — not ours"
+else
+  ok "not found: ${SYMLINK} (nothing to remove)"
+fi
+
+# --- 2. cron / launchd ---
+echo ""
+echo "--- schedule ---"
+if [[ "$(uname)" == "Darwin" ]]; then
+  PLIST_DIR="${HOME}/Library/LaunchAgents"
+  removed=0
+  for job in spawn guard intake kb-sync; do
+    plist="${PLIST_DIR}/com.fleet.${job}.plist"
+    if [[ -f "${plist}" ]]; then
+      launchctl unload "${plist}" 2>/dev/null || true
+      rm "${plist}"
+      ok "launchd removed: com.fleet.${job}"
+      removed=$(( removed + 1 ))
+    fi
+  done
+  [[ "${removed}" -eq 0 ]] && ok "launchd: no fleet agents found"
+else
+  if command -v crontab &>/dev/null; then
+    TMP=$(mktemp)
+    # Keep everything except our FLEET_ROOT env line and bin/* job lines.
+    crontab -l 2>/dev/null \
+      | grep -v "FLEET_ROOT=${FLEET_ROOT}" \
+      | grep -v "${FLEET_ROOT}/bin/" \
+      > "${TMP}" || true
+    crontab "${TMP}"
+    rm "${TMP}"
+    ok "cron: fleet jobs removed"
+  else
+    ok "cron: crontab not available — nothing to remove"
+  fi
+fi
+
+# --- 3. runtime / gitignored files ---
+echo ""
+echo "--- runtime files ---"
+
+# These are all gitignored; none are tracked source files.
+remove_dir()  { [[ -d "${1}" ]]  && { rm -rf "${1}"; ok "removed dir:  ${1#"${FLEET_ROOT}/"}"; } || ok "not found: ${1#"${FLEET_ROOT}/"}"; }
+remove_file() { [[ -f "${1}" ]]  && { rm -f  "${1}"; ok "removed file: ${1#"${FLEET_ROOT}/"}"; } || ok "not found: ${1#"${FLEET_ROOT}/"}"; }
+
+remove_dir  "${FLEET_ROOT}/logs"
+remove_dir  "${FLEET_ROOT}/tasks"
+remove_dir  "${FLEET_ROOT}/scratch"
+remove_file "${FLEET_ROOT}/usage.csv"
+remove_file "${FLEET_ROOT}/.now.lock"
+remove_file "${FLEET_ROOT}/fleet.config.local.yml"
+remove_file "${FLEET_ROOT}/.env"
+
+# Installed skills are gitignored (except .gitkeep and project-defaults).
+# Remove only the files that are actually gitignored, not the .gitkeep or
+# any !-excepted files.
+SKILLS_DIR="${FLEET_ROOT}/.claude/skills"
+if [[ -d "${SKILLS_DIR}" ]]; then
+  while IFS= read -r -d '' f; do
+    base="$(basename "${f}")"
+    [[ "${base}" == ".gitkeep" ]] && continue
+    # Check if this file is tracked by git; if so, skip it.
+    if git -C "${FLEET_ROOT}" ls-files --error-unmatch "${f}" &>/dev/null 2>&1; then
+      continue
+    fi
+    rm -f "${f}"
+    ok "removed skill: ${base}"
+  done < <(find "${SKILLS_DIR}" -maxdepth 1 -type f -print0 2>/dev/null)
+fi
+
+# --- 4. purge mode: delete repo ---
+if [[ "${PURGE}" == true ]]; then
+  echo ""
+  echo "--- purge ---"
+  info "Deleting: ${FLEET_ROOT}"
+  # We must cd out before deleting the directory we're currently in.
+  cd "${HOME}"
+  rm -rf "${FLEET_ROOT}"
+  ok "directory deleted: ${FLEET_ROOT}"
+fi
+
+echo ""
+echo "=== uninstall complete ==="
+if [[ "${PURGE}" != true ]]; then
+  echo ""
+  echo "The repository at ${FLEET_ROOT} is clean."
+  echo "You can safely move or re-clone it to a different location."
+  echo "To reinstall after moving: cd <new-location> && ./install"
+fi

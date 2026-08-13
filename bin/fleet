@@ -27,6 +27,7 @@ commands:
   budget
   doctor
   now
+  uninstall [--purge] [--force]
 
 exit codes: 0 ok  1 usage error  2 degraded  3 fleet stopped
 EOF
@@ -288,6 +289,10 @@ doctor)
 
 now)
   exec "${SCRIPT_DIR}/now"
+  ;;
+
+uninstall)
+  exec "${FLEET_ROOT}/uninstall" "$@"
   ;;
 
 *)
