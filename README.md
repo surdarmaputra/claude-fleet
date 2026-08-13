@@ -145,6 +145,54 @@ git diff main..agent/code-001
 
 ---
 
+## Agent skills
+
+Claude Code skills are markdown files that load a reusable set of instructions into any agent session when invoked with `/skill-name`. All skills live flat in `.claude/skills/`. Every file there is **gitignored by default**; project-default skills that should be shared are explicitly un-ignored in `.gitignore` one by one.
+
+### Installing a skill from the internet
+
+Use `bin/skill-install` to download a skill directly into `.claude/skills/`:
+
+```bash
+# From a raw URL
+bin/skill-install https://raw.githubusercontent.com/some-user/some-repo/main/skills/my-skill.md
+
+# GitHub shorthand: <user>/<repo>/<path-inside-repo>
+bin/skill-install some-user/some-repo/skills/my-skill.md
+```
+
+The downloaded `.md` file is immediately available in Claude Code sessions as `/my-skill`. It is never committed to git.
+
+### Managing installed skills
+
+```bash
+bin/skill-install --list              # list all skills in .claude/skills/
+bin/skill-install --remove my-skill   # remove a skill
+```
+
+### Shipping a project-default skill
+
+Create the skill file in `.claude/skills/`, then un-ignore it in `.gitignore`:
+
+```bash
+cat > .claude/skills/my-project-skill.md << 'EOF'
+---
+name: my-project-skill
+description: One-line description shown in the skill list
+---
+
+Full instructions that Claude will follow when /my-project-skill is invoked.
+EOF
+
+# Un-ignore it so it gets committed
+echo '!.claude/skills/my-project-skill.md' >> .gitignore
+git add .claude/skills/my-project-skill.md .gitignore
+```
+
+That `!` exception is the only extra step compared to a personal skill — everything else (detection, invocation) works the same way.
+
+---
+
 ## Multiple Claude accounts (optional)
 
 If you have separate personal and work subscriptions, create named CLI profiles:

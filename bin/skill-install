@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Install a Claude Code skill from a URL or GitHub shorthand into .claude/skills/
+# Usage:
+#   bin/skill-install <url>
+#   bin/skill-install <github-user>/<repo>/<path/to/skill.md>
+#   bin/skill-install --list
+#   bin/skill-install --remove <skill-name>
+
+set -euo pipefail
+
+FLEET_ROOT="${FLEET_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}"
+SKILLS_DIR="$FLEET_ROOT/.claude/skills"
+
+usage() {
+  echo "Usage:"
+  echo "  bin/skill-install <url>"
+  echo "  bin/skill-install <github-user>/<repo>/<path/to/skill.md>"
+  echo "  bin/skill-install --list"
+  echo "  bin/skill-install --remove <skill-name>"
+  exit 1
+}
+
+list_skills() {
+  echo "Installed local skills:"
+  local count=0
+  for f in "$SKILLS_DIR"/*.md; do
+    [[ -e "$f" ]] || continue
+    name=$(basename "$f" .md)
+    desc=$(grep -m1 '^description:' "$f" 2>/dev/null | sed 's/^description: *//' || echo "(no description)")
+    printf "  %-30s %s\n" "$name" "$desc"
+    ((count++))
+  done
+  [[ $count -eq 0 ]] && echo "  (none)"
+}
+
+remove_skill() {
+  local name="${1%.md}"
+  local target="$SKILLS_DIR/$name.md"
+  if [[ ! -f "$target" ]]; then
+    echo "Error: skill '$name' not found in $SKILLS_DIR" >&2
+    exit 1
+  fi
+  rm "$target"
+  echo "Removed: $name"
+}
+
+install_from_url() {
+  local url="$1"
+
+  # Expand GitHub shorthand: user/repo/path/to/skill.md
+  if [[ "$url" != http* ]]; then
+    local parts
+    IFS='/' read -ra parts <<< "$url"
+    if [[ ${#parts[@]} -lt 3 ]]; then
+      echo "Error: GitHub shorthand must be <user>/<repo>/<path>" >&2
+      usage
+    fi
+    local gh_user="${parts[0]}"
+    local gh_repo="${parts[1]}"
+    local gh_path
+    gh_path=$(IFS='/'; echo "${parts[*]:2}")
+    url="https://raw.githubusercontent.com/$gh_user/$gh_repo/main/$gh_path"
+  fi
+
+  local filename
+  filename=$(basename "$url")
+  # Strip query strings if present
+  filename="${filename%%\?*}"
+  # Ensure .md extension
+  [[ "$filename" != *.md ]] && filename="$filename.md"
+
+  local dest="$SKILLS_DIR/$filename"
+  local skill_name="${filename%.md}"
+
+  echo "Fetching: $url"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget &>/dev/null; then
+    wget -qO "$dest" "$url"
+  else
+    echo "Error: curl or wget required" >&2
+    exit 1
+  fi
+
+  echo "Installed: $skill_name → $dest"
+  echo "The skill is now available in Claude Code sessions within this project."
+}
+
+[[ $# -eq 0 ]] && usage
+
+case "$1" in
+  --list)   list_skills ;;
+  --remove) [[ $# -lt 2 ]] && usage; remove_skill "$2" ;;
+  *)        install_from_url "$1" ;;
+esac
