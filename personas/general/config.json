@@ -1,0 +1,16 @@
+{
+  "bin": "claude",
+  "workspace": "scratch",
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write"
+    ],
+    "deny": [
+      "Bash",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}

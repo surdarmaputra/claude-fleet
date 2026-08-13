@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stop hook: no-op for now. Placeholder for future task-status update logic.
+set -euo pipefail
+exit 0

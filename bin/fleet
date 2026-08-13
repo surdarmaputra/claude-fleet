@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# Fleet CLI — read-mostly inspection tool.
+# Usage: fleet <command> [options]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+usage() {
+  cat >&2 <<EOF
+usage: fleet <command> [options]
+
+commands:
+  tasks   [--status <s>] [--persona <p>] [--host <h>]
+  agents
+  adapters
+  cron
+  logs    [<job>] [-n <lines>]
+  usage   [--since <Nd>]
+  budget
+  doctor
+  now
+
+exit codes: 0 ok  1 usage error  2 degraded  3 fleet stopped
+EOF
+  exit 1
+}
+
+[[ $# -lt 1 ]] && usage
+CMD="${1}"; shift
+
+# ---------------------------------------------------------------------------
+case "${CMD}" in
+
+tasks)
+  FILTER_STATUS=""
+  FILTER_PERSONA=""
+  FILTER_HOST=""
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      --status)  FILTER_STATUS="${2}";  shift 2 ;;
+      --persona) FILTER_PERSONA="${2}"; shift 2 ;;
+      --host)    FILTER_HOST="${2}";    shift 2 ;;
+      *) echo "fleet tasks: unknown option: ${1}" >&2; exit 1 ;;
+    esac
+  done
+  # Collect matching tasks into per-status temp files, then print grouped.
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' EXIT
+  found=0
+  for f in "${TASKS_DIR}"/*.md; do
+    [[ -f "${f}" ]] || continue
+    s=$(task_get "${f}" "status")
+    p=$(task_get "${f}" "persona")
+    h=$(task_get "${f}" "host")
+    id=$(task_get "${f}" "id")
+    pri=$(task_get "${f}" "priority")
+    [[ -n "${FILTER_STATUS}"  && "${s}" != "${FILTER_STATUS}"  ]] && continue
+    [[ -n "${FILTER_PERSONA}" && "${p}" != "${FILTER_PERSONA}" ]] && continue
+    [[ -n "${FILTER_HOST}"    && "${h}" != "${FILTER_HOST}"    ]] && continue
+    echo "  ${id:-$(basename "${f}")}  persona=${p}  host=${h:-any}  priority=${pri:-normal}" \
+      >> "${tmpdir}/${s:-unknown}"
+    found=1
+  done
+  if [[ "${found}" -eq 0 ]]; then
+    echo "(no tasks)"
+  else
+    for status in todo doing blocked stale done unknown; do
+      [[ -f "${tmpdir}/${status}" ]] || continue
+      echo "=== ${status} ==="
+      cat "${tmpdir}/${status}"
+    done
+  fi
+  ;;
+
+agents)
+  running=$(tmux ls 2>/dev/null | grep "^fleet-" || echo "")
+  if [[ -z "${running}" ]]; then
+    echo "(no agent sessions running)"
+  else
+    echo "=== running agents ==="
+    while IFS= read -r line; do
+      session=$(echo "${line}" | awk -F: '{print $1}')
+      task_id="${session#fleet-}"
+      info=$(echo "${line}" | awk -F: '{print $2}' | tr -d ' ')
+      task_file="${TASKS_DIR}/${task_id}.md"
+      persona="unknown"
+      [[ -f "${task_file}" ]] && persona=$(task_get "${task_file}" "persona")
+      echo "  ${session}  persona=${persona}  ${info}"
+    done <<< "${running}"
+  fi
+  ;;
+
+adapters)
+  echo "=== intake adapters ==="
+  for dir in "${FLEET_ROOT}/intake/adapters"/*/; do
+    [[ -d "${dir}" ]] || continue
+    name=$(basename "${dir}")
+    kind=""; [[ -x "${dir}run" ]] && kind="run"; [[ -x "${dir}fetch" ]] && kind="fetch"
+    last_exit=$(grep "${name}" "${LOG_FILE}" 2>/dev/null | tail -1 | grep -o "exit=[0-9]*" | head -1 || echo "exit=?")
+    last_ts=$(grep "${name}" "${LOG_FILE}" 2>/dev/null | tail -1 | awk '{print $1}' || echo "never")
+    echo "  ${name}  type=${kind:-unknown}  last_run=${last_ts}  ${last_exit}"
+  done
+  echo ""
+  echo "=== kb adapters ==="
+  for dir in "${FLEET_ROOT}/kb/adapters"/*/; do
+    [[ -d "${dir}" ]] || continue
+    name=$(basename "${dir}")
+    last_exit=$(grep "kb-${name}" "${LOG_FILE}" 2>/dev/null | tail -1 | grep -o "exit=[0-9]*" | head -1 || echo "exit=?")
+    echo "  ${name}  ${last_exit}"
+  done
+  ;;
+
+cron)
+  echo "=== installed schedule ==="
+  if [[ "$(uname)" == "Darwin" ]]; then
+    PLIST_DIR="${HOME}/Library/LaunchAgents"
+    found=0
+    for job in spawn guard intake kb-sync; do
+      plist="${PLIST_DIR}/com.fleet.${job}.plist"
+      if [[ -f "${plist}" ]]; then
+        echo "  launchd: com.fleet.${job}"
+        found=1
+      fi
+    done
+    (( found == 0 )) && echo "  (no fleet launchd agents — run ./install)"
+  elif command -v crontab &>/dev/null; then
+    crontab -l 2>/dev/null | grep -E "^(FLEET_ROOT|.*/fleet/)" || echo "  (no fleet cron jobs — run ./install)"
+  else
+    echo "  (crontab not available)"
+  fi
+  echo ""
+  echo "=== last 5 runs per job ==="
+  for job in spawn guard intake kb-sync; do
+    echo "  --- ${job} ---"
+    grep "^.\{26\} ${job} " "${LOG_FILE}" 2>/dev/null | tail -5 | sed 's/^/  /' || echo "  (no entries)"
+  done
+  ;;
+
+logs)
+  JOB=""
+  LINES=5
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      -n) LINES="${2}"; shift 2 ;;
+      *)  JOB="${1}"; shift ;;
+    esac
+  done
+  if [[ -n "${JOB}" ]]; then
+    log="${FLEET_ROOT}/logs/${JOB}.log"
+    if [[ ! -f "${log}" ]]; then
+      # try agent log
+      log="${FLEET_ROOT}/logs/agent-${JOB}.log"
+    fi
+    [[ -f "${log}" ]] || { echo "fleet logs: no log for '${JOB}'" >&2; exit 1; }
+    tail -n "${LINES}" "${log}"
+  else
+    tail -n "${LINES}" "${LOG_FILE}" 2>/dev/null || echo "(no log yet)"
+  fi
+  ;;
+
+usage)
+  exec "${SCRIPT_DIR}/report" "$@"
+  ;;
+
+budget)
+  MAX_SESSIONS=$(config_get "budget.max_sessions_per_day" "25")
+  BUDGET_TOKENS=$(config_get "budget.daily_budget_tokens" "")
+  BUDGET_USD=$(config_get "budget.daily_budget_usd" "")
+  today=$(date -u +%Y-%m-%d)
+  sessions_today=0
+  [[ -f "${USAGE_CSV}" ]] && sessions_today=$(grep -c "^${today}" "${USAGE_CSV}" 2>/dev/null || true)
+  echo "sessions today: ${sessions_today} / ${MAX_SESSIONS}"
+  if [[ -n "${BUDGET_TOKENS}" && "${BUDGET_TOKENS}" -gt 0 ]]; then
+    tokens=0
+    [[ -f "${USAGE_CSV}" ]] && tokens=$(awk -F',' -v d="${today}" '
+      $1 ~ d { sum += $4 + $5 }
+      END { print int(sum) }
+    ' "${USAGE_CSV}" 2>/dev/null || echo 0)
+    pct=$(( tokens * 100 / BUDGET_TOKENS ))
+    echo "tokens today: ${tokens} / ${BUDGET_TOKENS}  (${pct}%)"
+  elif [[ -n "${BUDGET_USD}" ]]; then
+    echo "usd budget: ${BUDGET_USD} (token spend not computed)"
+  else
+    echo "budget: unset (set daily_budget_tokens in fleet.config.yml after week 1)"
+  fi
+  ;;
+
+doctor)
+  overall=0
+  warn() { echo "  WARN  $*"; overall=2; }
+  fail() { echo "  FAIL  $*"; overall=2; }
+  ok()   { echo "  OK    $*"; }
+
+  echo "=== fleet doctor ==="
+
+  # Config files
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    ok "fleet.config.yml (defaults)"
+  else
+    fail "fleet.config.yml missing — should be tracked in git"
+  fi
+  LOCAL_CONFIG_FILE="${FLEET_ROOT}/fleet.config.local.yml"
+  if [[ -f "${LOCAL_CONFIG_FILE}" ]]; then
+    ok "fleet.config.local.yml (local overrides)"
+  else
+    warn "fleet.config.local.yml not found — run ./install to create it"
+  fi
+
+  # .env
+  if [[ -f "${ENV_FILE}" ]]; then
+    ok ".env found"
+  else
+    warn ".env not found (copy from .env.example)"
+  fi
+
+  # Required binaries
+  CLAUDE_BIN=$(config_get "claude_bin" "${CLAUDE_BIN:-claude}")
+  for bin in tmux python3 "${CLAUDE_BIN}"; do
+    if command -v "${bin}" &>/dev/null; then
+      ok "binary: ${bin}"
+    else
+      fail "binary missing: ${bin}"
+    fi
+  done
+
+  # Schedule installed (cron on Linux, launchd on macOS)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ -f "${HOME}/Library/LaunchAgents/com.fleet.spawn.plist" ]]; then
+      ok "schedule: launchd agents installed"
+    else
+      warn "schedule: no launchd agents found (run ./install)"
+    fi
+  elif command -v crontab &>/dev/null && crontab -l 2>/dev/null | grep -qE "fleet/(spawn|guard)"; then
+    ok "schedule: cron jobs installed"
+  else
+    warn "schedule: no cron jobs found (run ./install)"
+  fi
+
+  # Adapters (last exit codes)
+  for dir in "${FLEET_ROOT}/intake/adapters"/*/; do
+    [[ -d "${dir}" ]] || continue
+    name=$(basename "${dir}")
+    last_exit=$(grep "^.\{26\} ${name} " "${LOG_FILE}" 2>/dev/null | tail -1 | grep -o "exit=[0-9]*" | sed 's/exit=//' || echo "")
+    if [[ -z "${last_exit}" ]]; then
+      ok "adapter ${name}: never run"
+    elif [[ "${last_exit}" == "0" ]]; then
+      ok "adapter ${name}: last exit 0"
+    else
+      warn "adapter ${name}: last exit ${last_exit}"
+    fi
+  done
+
+  # Budget
+  BUDGET_TOKENS=$(config_get "budget.daily_budget_tokens" "")
+  BUDGET_USD=$(config_get "budget.daily_budget_usd" "")
+  if [[ -z "${BUDGET_TOKENS}" && -z "${BUDGET_USD}" ]]; then
+    warn "budget: daily_budget_tokens unset (expected until end of week 1)"
+  else
+    ok "budget: configured"
+  fi
+
+  # Stale doing tasks (no tmux session)
+  stale=0
+  for f in "${TASKS_DIR}"/*.md; do
+    [[ -f "${f}" ]] || continue
+    s=$(task_get "${f}" "status"); [[ "${s}" == "doing" ]] || continue
+    id=$(task_get "${f}" "id")
+    tmux has-session -t "fleet-${id}" 2>/dev/null || (( stale++ )) || true
+  done
+  if (( stale > 0 )); then
+    warn "stale locks: ${stale} task(s) in doing with no session (run guard)"
+  else
+    ok "stale locks: none"
+  fi
+
+  echo ""
+  echo "result: $([[ ${overall} -eq 0 ]] && echo OK || echo DEGRADED)"
+  exit "${overall}"
+  ;;
+
+now)
+  exec "${SCRIPT_DIR}/now"
+  ;;
+
+*)
+  echo "fleet: unknown command: ${CMD}" >&2
+  usage
+  ;;
+
+esac

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Aggregate usage.csv by persona and task.
+# Usage: report [--since <duration>]   e.g. --since 7d
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+SINCE=""
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --since) SINCE="${2}"; shift 2 ;;
+    *) echo "report: unknown option: ${1}" >&2; exit 1 ;;
+  esac
+done
+
+if [[ ! -f "${USAGE_CSV}" ]]; then
+  echo "No usage data yet."
+  exit 0
+fi
+
+# Compute cutoff date if --since given.
+CUTOFF=""
+if [[ -n "${SINCE}" ]]; then
+  days="${SINCE%d}"
+  CUTOFF=$(date -u -d "${days} days ago" +%Y-%m-%d 2>/dev/null \
+    || date -u -v-"${days}"d +%Y-%m-%d 2>/dev/null || true)
+fi
+
+python3 - "${USAGE_CSV}" "${CUTOFF}" <<'EOF'
+import sys, csv
+from collections import defaultdict
+
+path, cutoff = sys.argv[1], sys.argv[2]
+
+rows = []
+with open(path) as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        if cutoff and row.get('timestamp', '')[:10] < cutoff:
+            continue
+        rows.append(row)
+
+if not rows:
+    print("No usage data in range.")
+    sys.exit(0)
+
+by_persona = defaultdict(lambda: {'input': 0, 'output': 0, 'cache': 0, 'tasks': set()})
+by_task    = defaultdict(lambda: {'input': 0, 'output': 0, 'cache': 0, 'persona': ''})
+
+for r in rows:
+    p = r.get('persona', 'unknown')
+    t = r.get('task_id', 'unknown')
+    inp   = int(r.get('input_tokens', 0) or 0)
+    out   = int(r.get('output_tokens', 0) or 0)
+    cache = int(r.get('cache_hit_tokens', 0) or 0)
+    by_persona[p]['input']  += inp
+    by_persona[p]['output'] += out
+    by_persona[p]['cache']  += cache
+    by_persona[p]['tasks'].add(t)
+    by_task[t]['input']   += inp
+    by_task[t]['output']  += out
+    by_task[t]['cache']   += cache
+    by_task[t]['persona']  = p
+
+def fmt_k(n):
+    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+print("\n=== By persona ===")
+print(f"{'persona':<16} {'tasks':>5} {'input':>8} {'output':>8} {'cache':>8}")
+for p, v in sorted(by_persona.items()):
+    print(f"{p:<16} {len(v['tasks']):>5} {fmt_k(v['input']):>8} {fmt_k(v['output']):>8} {fmt_k(v['cache']):>8}")
+
+print("\n=== By task ===")
+print(f"{'task_id':<20} {'persona':<14} {'input':>8} {'output':>8}")
+for t, v in sorted(by_task.items()):
+    print(f"{t:<20} {v['persona']:<14} {fmt_k(v['input']):>8} {fmt_k(v['output']):>8}")
+EOF

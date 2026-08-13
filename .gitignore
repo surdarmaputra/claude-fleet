@@ -1,0 +1,6 @@
+fleet.config.local.yml
+.env
+tasks/
+scratch/
+usage.csv
+logs/

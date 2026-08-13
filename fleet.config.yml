@@ -1,0 +1,18 @@
+host: localhost                  # override in fleet.config.local.yml
+repos_root: ../fleet-repos      # override in fleet.config.local.yml
+max_agents: 3
+work_repo_prefix:               # comma-separated repos requiring a work binary
+
+claude_bin: claude
+
+budget:
+  max_sessions_per_day: 25
+  daily_budget_tokens:          # set after week 1 of usage data
+  daily_budget_usd:             # use instead of tokens when on an API key
+  warn_at_percent: 80
+
+schedule:
+  spawn: "*/5 9-18 * * 1-5"
+  guard: "*/5 * * * *"
+  intake: "*/15 9-18 * * 1-5"
+  kb_sync: "0 7 * * 1-5"

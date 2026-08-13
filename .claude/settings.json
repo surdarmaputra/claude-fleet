@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${FLEET_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}/bin/hooks/session-end"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${FLEET_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}/bin/hooks/on-stop"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${FLEET_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}/bin/hooks/notify"
+          }
+        ]
+      }
+    ]
+  }
+}

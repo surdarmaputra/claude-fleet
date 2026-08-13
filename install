@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Preflight checks and cron (or launchd on macOS) installation.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${FLEET_ROOT}/fleet.config.yml"
+BIN="${FLEET_ROOT}/bin"
+
+fail() { echo "FAIL  $*" >&2; exit 1; }
+ok()   { echo "OK    $*"; }
+warn() { echo "WARN  $*"; }
+
+echo "=== fleet install ==="
+echo ""
+
+# --- Preflight ---
+echo "--- preflight ---"
+
+LOCAL_CONFIG="${FLEET_ROOT}/fleet.config.local.yml"
+
+[[ -f "${CONFIG_FILE}" ]] || fail "fleet.config.yml missing — this file should be tracked in git."
+ok "fleet.config.yml (defaults)"
+
+if [[ ! -f "${LOCAL_CONFIG}" ]]; then
+  cat > "${LOCAL_CONFIG}" <<LOCALCFG
+# Personal overrides — gitignored, never committed.
+# Only set values that differ from fleet.config.yml.
+host: $(hostname -s)
+repos_root: ../fleet-repos
+LOCALCFG
+  ok "fleet.config.local.yml created (edit to set host and repos_root)"
+else
+  ok "fleet.config.local.yml found"
+fi
+
+[[ -f "${FLEET_ROOT}/.env" ]] || warn ".env not found. Copy from .env.example."
+
+for bin in tmux python3; do
+  command -v "${bin}" &>/dev/null && ok "${bin}" || fail "${bin} not found"
+done
+
+# Make all bin/* executable.
+chmod +x "${BIN}"/{fleet,spawn,guard,task-set,now,report,kb-sync,intake}
+chmod +x "${BIN}"/hooks/{session-end,on-stop,notify}
+ok "bin/* executable"
+
+mkdir -p "${FLEET_ROOT}/logs" "${FLEET_ROOT}/results" "${FLEET_ROOT}/tasks" \
+  "${FLEET_ROOT}/scratch" "${FLEET_ROOT}/kb/data"
+ok "directories"
+
+# --- Schedule ---
+echo ""
+echo "--- schedule ---"
+
+source "${BIN}/lib.sh"
+
+SPAWN_SCHED=$(config_get "schedule.spawn" "*/5 9-18 * * 1-5")
+GUARD_SCHED=$(config_get "schedule.guard" "*/5 * * * *")
+INTAKE_SCHED=$(config_get "schedule.intake" "*/15 9-18 * * 1-5")
+KB_SCHED=$(config_get "schedule.kb_sync" "0 7 * * 1-5")
+
+if [[ "$(uname)" == "Darwin" ]]; then
+  # macOS: use launchd plist files.
+  PLIST_DIR="${HOME}/Library/LaunchAgents"
+  mkdir -p "${PLIST_DIR}"
+
+  for job in spawn guard intake kb-sync; do
+    plist="${PLIST_DIR}/com.fleet.${job}.plist"
+    interval=300  # default 5 min
+
+    cat > "${plist}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.${job}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BIN}/${job}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FLEET_ROOT</key>
+    <string>${FLEET_ROOT}</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>${interval}</integer>
+  <key>StandardOutPath</key>
+  <string>${FLEET_ROOT}/logs/fleet.log</string>
+  <key>StandardErrorPath</key>
+  <string>${FLEET_ROOT}/logs/fleet.log</string>
+</dict>
+</plist>
+PLIST
+    launchctl unload "${plist}" 2>/dev/null || true
+    launchctl load "${plist}"
+    ok "launchd: ${job}"
+  done
+else
+  # Linux: use crontab.
+  # FLEET_ROOT is exported so hook scripts resolve paths correctly
+  # regardless of the working directory the cron job runs in.
+  TMP=$(mktemp)
+  crontab -l 2>/dev/null | grep -v "fleet/" > "${TMP}" || true
+  cat >> "${TMP}" <<CRON
+FLEET_ROOT=${FLEET_ROOT}
+${SPAWN_SCHED}   ${BIN}/spawn   >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${GUARD_SCHED}   ${BIN}/guard   >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${INTAKE_SCHED}  ${BIN}/intake  >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+${KB_SCHED}      ${BIN}/kb-sync >> ${FLEET_ROOT}/logs/fleet.log 2>&1
+CRON
+  crontab "${TMP}"
+  rm "${TMP}"
+  ok "cron: jobs installed"
+  echo ""
+  echo "Active schedule:"
+  crontab -l | grep -E "^(FLEET_ROOT|.*/fleet/)"
+fi
+
+echo ""
+echo "=== install complete ==="
+echo "Run: fleet doctor"

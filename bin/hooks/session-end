@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# SessionEnd hook: append usage row to usage.csv.
+# Claude Code passes session metadata via environment variables.
+# Expected env vars (set by Claude Code): CLAUDE_TASK_ID, CLAUDE_PERSONA,
+# CLAUDE_INPUT_TOKENS, CLAUDE_OUTPUT_TOKENS, CLAUDE_CACHE_HIT_TOKENS, CLAUDE_MODEL
+set -euo pipefail
+
+FLEET_ROOT="${FLEET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+USAGE_CSV="${FLEET_ROOT}/usage.csv"
+
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+task_id="${CLAUDE_TASK_ID:-unknown}"
+persona="${CLAUDE_PERSONA:-unknown}"
+input="${CLAUDE_INPUT_TOKENS:-0}"
+output="${CLAUDE_OUTPUT_TOKENS:-0}"
+cache="${CLAUDE_CACHE_HIT_TOKENS:-0}"
+model="${CLAUDE_MODEL:-unknown}"
+
+# Write header if file is new.
+if [[ ! -f "${USAGE_CSV}" ]]; then
+  echo "timestamp,task_id,persona,input_tokens,output_tokens,cache_hit_tokens,model" > "${USAGE_CSV}"
+fi
+
+echo "${ts},${task_id},${persona},${input},${output},${cache},${model}" >> "${USAGE_CSV}"

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Claim todo tasks and launch detached tmux sessions.
+# Called by cron on the spawn schedule.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+HOST=$(config_get "host" "${FLEET_HOST:-$(hostname -s)}")
+MAX_AGENTS=$(config_get "max_agents" "3")
+CLAUDE_BIN=$(config_get "claude_bin" "${CLAUDE_BIN:-claude}")
+REPOS_ROOT=$(config_get "repos_root" "${FLEET_ROOT}/../fleet-repos")
+PERSONAS_DIR="${FLEET_ROOT}/personas"
+
+claimed=0
+exit_code=0
+
+running=$(tmux_running_count)
+
+if (( running >= MAX_AGENTS )); then
+  log_heartbeat "spawn" "0" "claimed=0" "running=${running}/${MAX_AGENTS}"
+  exit 0
+fi
+
+slots=$(( MAX_AGENTS - running ))
+
+# Collect todo tasks, high priority first.
+mapfile -t HIGH < <(
+  for f in "${TASKS_DIR}"/*.md 2>/dev/null; do
+    [[ -f "${f}" ]] || continue
+    s=$(task_get "${f}" "status"); [[ "${s}" == "todo" ]] || continue
+    p=$(task_get "${f}" "priority"); [[ "${p}" == "high" ]] || continue
+    h=$(task_get "${f}" "host")
+    [[ -z "${h}" || "${h}" == "${HOST}" ]] || continue
+    echo "${f}"
+  done
+)
+mapfile -t NORMAL < <(
+  for f in "${TASKS_DIR}"/*.md 2>/dev/null; do
+    [[ -f "${f}" ]] || continue
+    s=$(task_get "${f}" "status"); [[ "${s}" == "todo" ]] || continue
+    p=$(task_get "${f}" "priority"); [[ "${p}" == "normal" || -z "${p}" ]] || continue
+    h=$(task_get "${f}" "host")
+    [[ -z "${h}" || "${h}" == "${HOST}" ]] || continue
+    echo "${f}"
+  done
+)
+CANDIDATES=("${HIGH[@]}" "${NORMAL[@]}")
+
+for task_file in "${CANDIDATES[@]}"; do
+  (( slots <= 0 )) && break
+  [[ -f "${task_file}" ]] || continue
+
+  task_id=$(task_get "${task_file}" "id")
+  persona=$(task_get "${task_file}" "persona")
+  workspace=$(task_get "${task_file}" "workspace")
+  repo=$(task_get "${task_file}" "repo")
+
+  # Resolve persona config.
+  persona_dir="${PERSONAS_DIR}/${persona}"
+  if [[ ! -d "${persona_dir}" ]]; then
+    echo "spawn: unknown persona '${persona}' for task ${task_id}, skipping" >&2
+    continue
+  fi
+  persona_config="${persona_dir}/config.json"
+  persona_bin=$(python3 -c "import json,sys; d=json.load(open('${persona_config}')); print(d.get('bin',''))" 2>/dev/null || true)
+  [[ -z "${persona_bin}" ]] && persona_bin="${CLAUDE_BIN}"
+
+  # Guard: work repo must use work binary.
+  WORK_PREFIXES=$(config_get "work_repo_prefix" "")
+  if [[ -n "${WORK_PREFIXES}" && -n "${repo}" ]]; then
+    IFS=',' read -ra WP <<< "${WORK_PREFIXES}"
+    for wp in "${WP[@]}"; do
+      if [[ "${repo}" == "${wp}" && "${persona_bin}" == "${CLAUDE_BIN}" ]]; then
+        echo "spawn: credential mismatch — repo '${repo}' requires work binary, skipping ${task_id}" >&2
+        continue 2
+      fi
+    done
+  fi
+
+  # Claim task.
+  "${SCRIPT_DIR}/task-set" "${task_file}" "status" "doing"
+
+  # Resolve workspace path.
+  # Helpers for repo-requiring workspaces.
+  _require_repo() {
+    local mode="${1}"
+    if [[ -z "${repo}" ]]; then
+      echo "spawn: ${mode} workspace requires a repo field, skipping ${task_id}" >&2
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+      return 1
+    fi
+    if [[ ! -d "${REPOS_ROOT}/${repo}/.git" ]]; then
+      echo "spawn: repo '${repo}' not found at ${REPOS_ROOT}/${repo} — clone it first, skipping ${task_id}" >&2
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+      return 1
+    fi
+    return 0
+  }
+
+  case "${workspace}" in
+    worktree)
+      _require_repo "worktree" || continue
+      ws_path="${REPOS_ROOT}/.worktrees/${task_id}"
+      mkdir -p "${ws_path}"
+      git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" -b "agent/${task_id}" 2>/dev/null \
+        || git -C "${REPOS_ROOT}/${repo}" worktree add "${ws_path}" 2>/dev/null || true
+      ;;
+    repo)
+      # Direct access to the repo — no branch isolation. Use for lightweight tasks.
+      _require_repo "repo" || continue
+      ws_path="${REPOS_ROOT}/${repo}"
+      ;;
+    repo-ro)
+      _require_repo "repo-ro" || continue
+      ws_path="${REPOS_ROOT}/${repo}"
+      ;;
+    scratch|*)
+      ws_path="${SCRATCH_DIR}/${task_id}"
+      mkdir -p "${ws_path}"
+      ;;
+  esac
+
+  session_name="fleet-${task_id}"
+  log_file="${FLEET_ROOT}/logs/agent-${task_id}.log"
+  prompt_file="${persona_dir}/prompt.md"
+  result_file="${RESULTS_DIR}/${task_id}.md"
+
+  launch_script="${SCRATCH_DIR}/${task_id}/.launch.sh"
+  mkdir -p "${SCRATCH_DIR}/${task_id}"
+  cat > "${launch_script}" <<LAUNCH
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ws_path}" 2>/dev/null || cd "${FLEET_ROOT}"
+source "${ENV_FILE}" 2>/dev/null || true
+
+TASK_BODY=\$(awk '/^---$/{n++} n==2{found=1; next} found{print}' "${task_file}")
+
+echo "## Round \$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${result_file}"
+echo "" >> "${result_file}"
+
+SYSTEM_PROMPT=\$(cat "${prompt_file}" 2>/dev/null || true)
+
+if "${persona_bin}" --print \
+    --system-prompt "\${SYSTEM_PROMPT}" \
+    "\${TASK_BODY}" >> "${result_file}" 2>>"${log_file}"; then
+  "${SCRIPT_DIR}/task-set" "${task_file}" "status" "done"
+  echo "agent: task ${task_id} done" >> "${log_file}"
+else
+  "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+  echo "agent: task ${task_id} failed, reset to todo" >> "${log_file}"
+fi
+LAUNCH
+  chmod +x "${launch_script}"
+
+  tmux new-session -d -s "${session_name}" "bash '${launch_script}' 2>>'${log_file}'" || {
+    echo "spawn: tmux failed for ${task_id}" >&2
+    "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+    exit_code=2
+    continue
+  }
+
+  (( claimed++ ))
+  (( slots-- ))
+  running=$(( running + 1 ))
+done
+
+log_heartbeat "spawn" "${exit_code}" "claimed=${claimed}" "running=$(tmux_running_count)/${MAX_AGENTS}"
+exit "${exit_code}"

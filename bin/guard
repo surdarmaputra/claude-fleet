@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Budget cap, orphan recovery, credential mismatch. Runs every 5 min always.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib.sh"
+
+HOST=$(config_get "host" "${FLEET_HOST:-$(hostname -s)}")
+MAX_SESSIONS=$(config_get "budget.max_sessions_per_day" "25")
+BUDGET_TOKENS=$(config_get "budget.daily_budget_tokens" "")
+BUDGET_USD=$(config_get "budget.daily_budget_usd" "")
+CLAUDE_BIN=$(config_get "claude_bin" "${CLAUDE_BIN:-claude}")
+WORK_PREFIXES=$(config_get "work_repo_prefix" "")
+PERSONAS_DIR="${FLEET_ROOT}/personas"
+
+killed=0
+orphans=0
+exit_code=0
+budget_status="unset"
+
+today=$(date -u +%Y-%m-%d)
+
+# Count sessions run today from usage.csv.
+sessions_today=0
+if [[ -f "${USAGE_CSV}" ]]; then
+  sessions_today=$(grep -c "^${today}" "${USAGE_CSV}" 2>/dev/null || true)
+fi
+
+# Kill all running fleet sessions and return count killed.
+kill_all_sessions() {
+  local n=0
+  while IFS= read -r s; do
+    tmux kill-session -t "${s}" 2>/dev/null && (( n++ )) || true
+  done < <(tmux ls 2>/dev/null | grep "^fleet-" | awk -F: '{print $1}')
+  echo "${n}"
+}
+
+# --- Session count cap ---
+if (( sessions_today >= MAX_SESSIONS )); then
+  killed=$(kill_all_sessions)
+  log_heartbeat "guard" "3" "killed=${killed}" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
+  exit 3
+fi
+
+# --- Token budget cap ---
+if [[ -n "${BUDGET_TOKENS}" && "${BUDGET_TOKENS}" -gt 0 ]]; then
+  tokens_today=0
+  if [[ -f "${USAGE_CSV}" ]]; then
+    tokens_today=$(awk -F',' -v d="${today}" '
+      $1 ~ d { sum += $4 + $5 + $6 }
+      END { print int(sum) }
+    ' "${USAGE_CSV}" 2>/dev/null || echo 0)
+  fi
+  budget_status="${tokens_today}/${BUDGET_TOKENS}"
+  if (( tokens_today >= BUDGET_TOKENS )); then
+    killed=$(kill_all_sessions)
+    log_heartbeat "guard" "3" "killed=${killed}" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
+    exit 3
+  fi
+elif [[ -n "${BUDGET_USD}" ]]; then
+  budget_status="usd-configured"
+fi
+
+# --- Orphan recovery: doing tasks with no tmux session ---
+for task_file in "${TASKS_DIR}"/*.md; do
+  [[ -f "${task_file}" ]] || continue
+  s=$(task_get "${task_file}" "status")
+  [[ "${s}" == "doing" ]] || continue
+
+  h=$(task_get "${task_file}" "host")
+  [[ -z "${h}" || "${h}" == "${HOST}" ]] || continue
+
+  task_id=$(task_get "${task_file}" "id")
+  session_name="fleet-${task_id}"
+
+  if ! tmux has-session -t "${session_name}" 2>/dev/null; then
+    (( orphans++ )) || true
+    attempts=$(task_get "${task_file}" "attempts")
+    attempts="${attempts:-0}"
+    attempts=$(( attempts + 1 ))
+    "${SCRIPT_DIR}/task-set" "${task_file}" "attempts" "${attempts}"
+    if (( attempts < 3 )); then
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+    else
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "blocked"
+      exit_code=2
+    fi
+  fi
+done
+
+# --- Credential mismatch: work repo on wrong binary ---
+if [[ -n "${WORK_PREFIXES}" ]]; then
+  IFS=',' read -ra WP <<< "${WORK_PREFIXES}"
+  for task_file in "${TASKS_DIR}"/*.md; do
+    [[ -f "${task_file}" ]] || continue
+    s=$(task_get "${task_file}" "status")
+    [[ "${s}" == "doing" ]] || continue
+
+    task_id=$(task_get "${task_file}" "id")
+    repo=$(task_get "${task_file}" "repo")
+    persona=$(task_get "${task_file}" "persona")
+
+    persona_config="${PERSONAS_DIR}/${persona}/config.json"
+    [[ -f "${persona_config}" ]] || continue
+    persona_bin=$(python3 -c "import json,sys; d=json.load(open('${persona_config}')); print(d.get('bin',''))" 2>/dev/null || true)
+    [[ -z "${persona_bin}" ]] && persona_bin="${CLAUDE_BIN}"
+
+    for wp in "${WP[@]}"; do
+      if [[ "${repo}" == "${wp}" && "${persona_bin}" == "${CLAUDE_BIN}" ]]; then
+        session_name="fleet-${task_id}"
+        tmux kill-session -t "${session_name}" 2>/dev/null && (( killed++ )) || true
+        "${SCRIPT_DIR}/task-set" "${task_file}" "status" "blocked"
+        exit_code=2
+        break
+      fi
+    done
+  done
+fi
+
+# --- Purge stale scratch dirs (7 days after done) ---
+if [[ -d "${SCRATCH_DIR}" ]]; then
+  find "${SCRATCH_DIR}" -maxdepth 1 -mindepth 1 -type d -mtime +7 | while read -r d; do
+    task_id=$(basename "${d}")
+    task_file="${TASKS_DIR}/${task_id}.md"
+    if [[ -f "${task_file}" ]]; then
+      s=$(task_get "${task_file}" "status")
+      [[ "${s}" == "done" ]] && rm -rf "${d}"
+    else
+      rm -rf "${d}"
+    fi
+  done
+fi
+
+log_heartbeat "guard" "${exit_code}" "killed=${killed}" "orphans=${orphans}" "sessions=${sessions_today}/${MAX_SESSIONS}" "budget=${budget_status}"
+exit "${exit_code}"
