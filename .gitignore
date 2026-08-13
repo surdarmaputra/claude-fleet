@@ -10,3 +10,4 @@ logs/
 #   !.claude/skills/your-skill-name.md
 .claude/skills/*
 !.claude/skills/.gitkeep
+!.claude/skills/commit.md
