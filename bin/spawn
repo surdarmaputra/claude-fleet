@@ -26,7 +26,7 @@ slots=$(( MAX_AGENTS - running ))
 
 # Collect todo tasks, high priority first.
 mapfile -t HIGH < <(
-  for f in "${TASKS_DIR}"/*.md 2>/dev/null; do
+  for f in "${TASKS_DIR}"/*.md; do
     [[ -f "${f}" ]] || continue
     s=$(task_get "${f}" "status"); [[ "${s}" == "todo" ]] || continue
     p=$(task_get "${f}" "priority"); [[ "${p}" == "high" ]] || continue
@@ -36,7 +36,7 @@ mapfile -t HIGH < <(
   done
 )
 mapfile -t NORMAL < <(
-  for f in "${TASKS_DIR}"/*.md 2>/dev/null; do
+  for f in "${TASKS_DIR}"/*.md; do
     [[ -f "${f}" ]] || continue
     s=$(task_get "${f}" "status"); [[ "${s}" == "todo" ]] || continue
     p=$(task_get "${f}" "priority"); [[ "${p}" == "normal" || -z "${p}" ]] || continue
