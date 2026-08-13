@@ -3,8 +3,8 @@
 
 FLEET_ROOT_REAL="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
 
-load "${BATS_TEST_DIRNAME}/lib/bats-support/load.bash"
-load "${BATS_TEST_DIRNAME}/lib/bats-assert/load.bash"
+load "${BATS_TEST_DIRNAME}/test_helper/bats-support/load.bash"
+load "${BATS_TEST_DIRNAME}/test_helper/bats-assert/load.bash"
 
 # Create a temp fleet root with config copied in.
 # Sets and exports FLEET_ROOT and FLEET_DIR.

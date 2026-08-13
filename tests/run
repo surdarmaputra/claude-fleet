@@ -7,7 +7,7 @@
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATS="${TESTS_DIR}/lib/bats/bin/bats"
+BATS="${TESTS_DIR}/test_helper/bats/bin/bats"
 
 if [[ $# -gt 0 ]]; then
   exec "${BATS}" --timing "$@"

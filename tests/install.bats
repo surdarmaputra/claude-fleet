@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-load helper
+load test_helper/common
 
 FLEET_ROOT_REAL="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
 
