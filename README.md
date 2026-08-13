@@ -59,6 +59,12 @@ After moving the repo, run `./install` again from the new location.
 Both modes are also available as `fleet uninstall [--purge] [--force]` once the
 symlink is installed.
 
+> **How can a script delete its own directory while still running?**
+> - `rm` removes the *directory entry* (the name), not the file data immediately.
+> - The kernel only frees data blocks when nothing holds the file open anymore.
+> - Bash keeps the script open via a file descriptor, so it keeps running after the name is gone.
+> - The script `cd`s to `$HOME` first so the working directory is outside the deleted tree.
+
 `./install` symlinks `fleet` into `~/.local/bin/` so you can run `fleet` from anywhere on the machine. If `install` prints a PATH warning, add this to your `~/.bashrc` or `~/.zshrc` and reload your shell:
 
 ```bash
