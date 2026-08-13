@@ -1,4 +1,4 @@
-fleet.config.yml
+fleet.config.local.yml
 .env
 tasks/
 scratch/

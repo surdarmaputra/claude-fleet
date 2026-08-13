@@ -194,11 +194,17 @@ doctor)
 
   echo "=== fleet doctor ==="
 
-  # Config file
+  # Config files
   if [[ -f "${CONFIG_FILE}" ]]; then
-    ok "fleet.config.yml found"
+    ok "fleet.config.yml (defaults)"
   else
-    fail "fleet.config.yml not found (copy from fleet.config.yml.example)"
+    fail "fleet.config.yml missing — should be tracked in git"
+  fi
+  LOCAL_CONFIG_FILE="${FLEET_ROOT}/fleet.config.local.yml"
+  if [[ -f "${LOCAL_CONFIG_FILE}" ]]; then
+    ok "fleet.config.local.yml (local overrides)"
+  else
+    warn "fleet.config.local.yml not found — run ./install to create it"
   fi
 
   # .env

@@ -20,15 +20,32 @@ A personal Claude Code agent fleet. You write task files; cron spawns Claude ses
 git clone https://github.com/surdarmaputra/claude-fleet
 cd claude-fleet
 
-cp fleet.config.yml.example fleet.config.yml
-cp .env.example .env
-
-# Edit fleet.config.yml — set host and repos_root at minimum
-./install
+cp .env.example .env        # fill in any secrets you need
+./install                   # creates fleet.config.local.yml and installs cron
 bin/fleet doctor
 ```
 
 `fleet doctor` will report WARN for `budget: unset` — that's expected until you have a week of usage data. Everything else should be OK.
+
+### Config files
+
+| File | Tracked | Purpose |
+|---|---|---|
+| `fleet.config.yml` | ✅ yes | Defaults for all settings. Never edit directly. |
+| `fleet.config.local.yml` | ❌ gitignored | Your personal overrides. Only set what differs from the defaults. |
+| `.env.example` | ✅ yes | Documents every secret the project uses. |
+| `.env` | ❌ gitignored | Your actual secrets. |
+
+`./install` creates `fleet.config.local.yml` automatically with your hostname and `repos_root`. Edit it to adjust:
+
+```yaml
+# fleet.config.local.yml — gitignored, never committed
+host: my-laptop
+repos_root: /home/user/code
+max_agents: 2
+```
+
+Only the keys you include here override the defaults. Anything not listed falls through to `fleet.config.yml`.
 
 ---
 

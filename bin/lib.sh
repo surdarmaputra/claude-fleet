@@ -4,6 +4,7 @@ set -euo pipefail
 
 FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${FLEET_ROOT}/fleet.config.yml"
+LOCAL_CONFIG_FILE="${FLEET_ROOT}/fleet.config.local.yml"
 ENV_FILE="${FLEET_ROOT}/.env"
 LOG_FILE="${FLEET_ROOT}/logs/fleet.log"
 USAGE_CSV="${FLEET_ROOT}/usage.csv"
@@ -14,34 +15,39 @@ SCRATCH_DIR="${FLEET_ROOT}/scratch"
 # Load .env if present
 [[ -f "${ENV_FILE}" ]] && set -a && source "${ENV_FILE}" && set +a
 
-# Read a scalar from fleet.config.yml. Usage: config_get key [default]
+# Read a scalar from config files. Local file takes precedence over default.
+# Usage: config_get key [default]
 # Handles top-level keys and one level of nesting (budget.warn_at_percent).
 config_get() {
   local key="${1}" default="${2:-}"
-  if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "${default}"
-    return
-  fi
   local val
-  if [[ "${key}" == *.* ]]; then
-    # nested: e.g. budget.max_sessions_per_day
-    local parent="${key%%.*}" child="${key#*.}"
-    val=$(awk -v parent="${parent}:" -v child="  ${child}:" '
-      /^[^ ]/ { in_parent=0 }
-      $0 ~ "^"parent { in_parent=1; next }
-      in_parent && $0 ~ "^"child {
-        sub(/^[^:]+:[[:space:]]*/, "")
-        sub(/#.*$/, "")
-        gsub(/[[:space:]]/, "")
-        print; exit
-      }
-    ' "${CONFIG_FILE}")
-  else
-    val=$(grep -E "^${key}:" "${CONFIG_FILE}" | head -1 \
-      | sed 's/^[^:]*:[[:space:]]*//' \
-      | sed 's/[[:space:]]*#.*//' \
-      | tr -d '[:space:]')
-  fi
+
+  _config_read_key() {
+    local file="${1}" k="${2}"
+    if [[ ! -f "${file}" ]]; then return; fi
+    if [[ "${k}" == *.* ]]; then
+      local parent="${k%%.*}" child="${k#*.}"
+      awk -v parent="${parent}:" -v child="  ${child}:" '
+        /^[^ ]/ { in_parent=0 }
+        $0 ~ "^"parent { in_parent=1; next }
+        in_parent && $0 ~ "^"child {
+          sub(/^[^:]+:[[:space:]]*/, "")
+          sub(/#.*$/, "")
+          gsub(/[[:space:]]/, "")
+          print; exit
+        }
+      ' "${file}"
+    else
+      grep -E "^${k}:" "${file}" | head -1 \
+        | sed 's/^[^:]*:[[:space:]]*//' \
+        | sed 's/[[:space:]]*#.*//' \
+        | tr -d '[:space:]'
+    fi
+  }
+
+  # Local file wins; fall back to default config.
+  val=$(_config_read_key "${LOCAL_CONFIG_FILE}" "${key}")
+  [[ -z "${val}" ]] && val=$(_config_read_key "${CONFIG_FILE}" "${key}")
   echo "${val:-${default}}"
 }
 

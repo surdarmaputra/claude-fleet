@@ -16,8 +16,22 @@ echo ""
 # --- Preflight ---
 echo "--- preflight ---"
 
-[[ -f "${CONFIG_FILE}" ]] || fail "fleet.config.yml not found. Copy from fleet.config.yml.example and edit."
-ok "fleet.config.yml"
+LOCAL_CONFIG="${FLEET_ROOT}/fleet.config.local.yml"
+
+[[ -f "${CONFIG_FILE}" ]] || fail "fleet.config.yml missing — this file should be tracked in git."
+ok "fleet.config.yml (defaults)"
+
+if [[ ! -f "${LOCAL_CONFIG}" ]]; then
+  cat > "${LOCAL_CONFIG}" <<LOCALCFG
+# Personal overrides — gitignored, never committed.
+# Only set values that differ from fleet.config.yml.
+host: $(hostname -s)
+repos_root: ../fleet-repos
+LOCALCFG
+  ok "fleet.config.local.yml created (edit to set host and repos_root)"
+else
+  ok "fleet.config.local.yml found"
+fi
 
 [[ -f "${FLEET_ROOT}/.env" ]] || warn ".env not found. Copy from .env.example."
 
