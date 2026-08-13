@@ -44,6 +44,16 @@ chmod +x "${BIN}"/{fleet,spawn,guard,task-set,now,report,kb-sync,intake}
 chmod +x "${BIN}"/hooks/{session-end,on-stop,notify}
 ok "bin/* executable"
 
+# Symlink fleet into ~/.local/bin so it's on PATH from anywhere.
+LOCAL_BIN="${HOME}/.local/bin"
+mkdir -p "${LOCAL_BIN}"
+ln -sf "${BIN}/fleet" "${LOCAL_BIN}/fleet"
+ok "symlinked: ${LOCAL_BIN}/fleet -> ${BIN}/fleet"
+if [[ ":${PATH}:" != *":${LOCAL_BIN}:"* ]]; then
+  warn "${LOCAL_BIN} is not in PATH — add this to ~/.bashrc or ~/.zshrc:"
+  warn "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+fi
+
 mkdir -p "${FLEET_ROOT}/logs" "${FLEET_ROOT}/results" "${FLEET_ROOT}/tasks" \
   "${FLEET_ROOT}/scratch" "${FLEET_ROOT}/kb/data"
 ok "directories"
