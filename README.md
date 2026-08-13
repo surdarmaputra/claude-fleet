@@ -21,8 +21,14 @@ git clone https://github.com/surdarmaputra/claude-fleet
 cd claude-fleet
 
 cp .env.example .env        # fill in any secrets you need
-./install                   # creates fleet.config.local.yml and installs cron
-bin/fleet doctor
+./install                   # creates fleet.config.local.yml, installs cron, and symlinks fleet to ~/.local/bin
+fleet doctor
+```
+
+`./install` symlinks `fleet` into `~/.local/bin/` so you can run `fleet` from anywhere on the machine. If `install` prints a PATH warning, add this to your `~/.bashrc` or `~/.zshrc` and reload your shell:
+
+```bash
+export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
 `fleet doctor` will report WARN for `budget: unset` — that's expected until you have a week of usage data. Everything else should be OK.
