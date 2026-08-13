@@ -8,9 +8,16 @@ A personal Claude Code agent fleet. You write task files; cron spawns Claude ses
 
 ## Prerequisites
 
-- [Claude Code](https://claude.ai/code) installed and authenticated (`claude` in PATH)
-- `tmux` and `python3`
-- Linux, macOS, or WSL2
+| Dependency | Why it's needed | Checked by |
+|---|---|---|
+| [Claude Code](https://claude.ai/code) (`claude`) | Runs every agent session | `fleet doctor` |
+| `tmux` | `spawn` launches each agent as a detached tmux session; `guard` checks and kills sessions | `./install` and `fleet doctor` |
+| `python3` (stdlib only) | `task-set` manipulates YAML frontmatter; `report` parses usage CSV; `spawn`/`guard` read persona config | `./install` and `fleet doctor` |
+| `cron` (Linux) or `launchd` (macOS) | Runs `spawn`, `guard`, `intake`, and `kb-sync` on schedule | `./install` installs the jobs; `fleet doctor` verifies they are registered |
+
+`./install` will hard-fail if `tmux` or `python3` are missing. `fleet doctor` additionally verifies the Claude binary and warns if the schedule is not installed.
+
+**Platform:** Linux, macOS, or WSL2.
 
 ---
 
