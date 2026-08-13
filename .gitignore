@@ -5,7 +5,8 @@ scratch/
 usage.csv
 logs/
 
-# Locally installed skills (from internet). Project-default skills in
-# .claude/skills/ are tracked; only the local/ subdirectory is ignored.
-.claude/skills/local/*
-!.claude/skills/local/.gitkeep
+# Skills installed from the internet are gitignored by default.
+# To ship a project-default skill, add a !-exception line here:
+#   !.claude/skills/your-skill-name.md
+.claude/skills/*
+!.claude/skills/.gitkeep

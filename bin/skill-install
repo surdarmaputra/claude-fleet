@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a Claude Code skill from a URL or GitHub shorthand into .claude/skills/local/
+# Install a Claude Code skill from a URL or GitHub shorthand into .claude/skills/
 # Usage:
 #   bin/skill-install <url>
 #   bin/skill-install <github-user>/<repo>/<path/to/skill.md>
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 FLEET_ROOT="${FLEET_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}"
-SKILLS_DIR="$FLEET_ROOT/.claude/skills/local"
+SKILLS_DIR="$FLEET_ROOT/.claude/skills"
 
 usage() {
   echo "Usage:"

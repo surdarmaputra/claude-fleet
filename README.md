@@ -147,18 +147,11 @@ git diff main..agent/code-001
 
 ## Agent skills
 
-Claude Code skills are markdown files that load a reusable set of instructions into any agent session when invoked with `/skill-name`. This project ships **project-default skills** (tracked in `.claude/skills/`) and supports **locally installed skills** (gitignored, in `.claude/skills/local/`) that you pull from the internet and keep private.
-
-### Directory layout
-
-```
-.claude/skills/            # ✅ tracked — project-default skills shipped with this repo
-.claude/skills/local/      # ❌ gitignored — your personal installs (never committed)
-```
+Claude Code skills are markdown files that load a reusable set of instructions into any agent session when invoked with `/skill-name`. All skills live flat in `.claude/skills/`. Every file there is **gitignored by default**; project-default skills that should be shared are explicitly un-ignored in `.gitignore` one by one.
 
 ### Installing a skill from the internet
 
-Use `bin/skill-install` to download a skill and drop it into `.claude/skills/local/`:
+Use `bin/skill-install` to download a skill directly into `.claude/skills/`:
 
 ```bash
 # From a raw URL
@@ -168,18 +161,18 @@ bin/skill-install https://raw.githubusercontent.com/some-user/some-repo/main/ski
 bin/skill-install some-user/some-repo/skills/my-skill.md
 ```
 
-The downloaded `.md` file lands in `.claude/skills/local/` and is immediately available in Claude Code sessions as `/my-skill`. It is never committed to git.
+The downloaded `.md` file is immediately available in Claude Code sessions as `/my-skill`. It is never committed to git.
 
-### Managing local skills
+### Managing installed skills
 
 ```bash
-bin/skill-install --list              # list all installed local skills
-bin/skill-install --remove my-skill   # remove a local skill
+bin/skill-install --list              # list all skills in .claude/skills/
+bin/skill-install --remove my-skill   # remove a skill
 ```
 
-### Writing a project-default skill
+### Shipping a project-default skill
 
-Drop a markdown file directly into `.claude/skills/` (not `local/`). It will be committed with the repo and shared with every collaborator.
+Create the skill file in `.claude/skills/`, then un-ignore it in `.gitignore`:
 
 ```bash
 cat > .claude/skills/my-project-skill.md << 'EOF'
@@ -190,9 +183,13 @@ description: One-line description shown in the skill list
 
 Full instructions that Claude will follow when /my-project-skill is invoked.
 EOF
+
+# Un-ignore it so it gets committed
+echo '!.claude/skills/my-project-skill.md' >> .gitignore
+git add .claude/skills/my-project-skill.md .gitignore
 ```
 
-Project-default skills are tracked in git. Local skills in `.claude/skills/local/` are gitignored.
+That `!` exception is the only extra step compared to a personal skill — everything else (detection, invocation) works the same way.
 
 ---
 
