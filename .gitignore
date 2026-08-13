@@ -4,3 +4,8 @@ tasks/
 scratch/
 usage.csv
 logs/
+
+# Locally installed skills (from internet). Project-default skills in
+# .claude/skills/ are tracked; only the local/ subdirectory is ignored.
+.claude/skills/local/*
+!.claude/skills/local/.gitkeep
