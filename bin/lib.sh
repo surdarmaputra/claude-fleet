@@ -2,7 +2,7 @@
 # Shared utilities sourced by all fleet scripts.
 set -euo pipefail
 
-FLEET_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLEET_ROOT="${FLEET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONFIG_FILE="${FLEET_ROOT}/fleet.config.yml"
 LOCAL_CONFIG_FILE="${FLEET_ROOT}/fleet.config.local.yml"
 ENV_FILE="${FLEET_ROOT}/.env"
@@ -32,16 +32,18 @@ config_get() {
         $0 ~ "^"parent { in_parent=1; next }
         in_parent && $0 ~ "^"child {
           sub(/^[^:]+:[[:space:]]*/, "")
-          sub(/#.*$/, "")
-          gsub(/[[:space:]]/, "")
+          sub(/[[:space:]]*#.*$/, "")
+          sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+          gsub(/^["'"'"']|["'"'"']$/, "")
           print; exit
         }
       ' "${file}"
     else
-      grep -E "^${k}:" "${file}" | head -1 \
+      { grep -E "^${k}:" "${file}" || true; } | head -1 \
         | sed 's/^[^:]*:[[:space:]]*//' \
         | sed 's/[[:space:]]*#.*//' \
-        | tr -d '[:space:]'
+        | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+        | sed 's/^["'"'"']//; s/["'"'"']$//'
     fi
   }
 

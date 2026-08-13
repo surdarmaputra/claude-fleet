@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run the fleet test suite via bats.
+# Usage: tests/run [bats options or file patterns]
+#   tests/run                     # all tests
+#   tests/run tests/guard.bats    # one file
+#   tests/run --filter "orphan"   # tests matching a name pattern
+set -euo pipefail
+
+TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BATS="${TESTS_DIR}/test_helper/bats/bin/bats"
+
+if [[ $# -gt 0 ]]; then
+  exec "${BATS}" --timing "$@"
+else
+  exec "${BATS}" --timing "${TESTS_DIR}"/*.bats
+fi

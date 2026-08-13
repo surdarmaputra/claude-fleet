@@ -4,6 +4,7 @@ tasks/
 scratch/
 usage.csv
 logs/
+.now.lock
 
 # Skills installed from the internet are gitignored by default.
 # To ship a project-default skill, add a !-exception line here:
