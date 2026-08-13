@@ -280,6 +280,74 @@ Exit codes: `0` ok · `2` degraded (fleet still runs) · `3` stopped by guard.
 
 ---
 
+## Testing
+
+Tests use **[bats-core](https://github.com/bats-core/bats-core)** (Bash Automated Testing System), which is the standard testing framework for bash scripts. It is included as a git submodule — no separate install step needed.
+
+### First-time setup
+
+After cloning (or after pulling a commit that adds a new submodule), initialise the test dependencies:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Running the tests
+
+```bash
+tests/run                          # run all 50 tests
+tests/run tests/guard.bats         # run a single file
+tests/run --filter "orphan"        # run tests whose name matches a pattern
+```
+
+### Test layout
+
+```
+tests/
+  test_helper/
+    bats/             # bats-core binary (submodule)
+    bats-support/     # error formatting helpers (submodule)
+    bats-assert/      # assertion helpers (submodule)
+    common.bash       # shared make_fleet_root / make_task helpers
+  lib.bats            # bin/lib.sh — config_get, task_get, now_ts
+  task_set.bats       # bin/task-set
+  fleet_cli.bats      # bin/fleet (all subcommands)
+  guard.bats          # bin/guard — orphan recovery, budget blocking
+  spawn.bats          # bin/spawn — task dispatch
+  now.bats            # bin/now — debounce logic
+  report.bats         # bin/report — CSV parsing
+  install.bats        # install — cron expression validity
+  run                 # thin shim: exec bats tests/*.bats
+```
+
+**Convention:** one `.bats` file per source script. Helpers stay in `test_helper/`; test files always end in `.bats`.
+
+### Writing a new test
+
+Open the `.bats` file that matches the script you changed and add an `@test` block:
+
+```bash
+@test "guard: does X when Y" {
+  make_task "t1" "doing"          # helpers from test_helper/common.bash
+  run "${GUARD}"                  # `run` captures output + exit code
+  assert_output --partial "X"     # assert on $output
+  assert_success                  # assert on $status
+}
+```
+
+Key assertions from bats-assert:
+
+| assertion | checks |
+|---|---|
+| `assert_success` | exit code 0 |
+| `assert_failure` | exit code nonzero |
+| `assert_output "exact"` | exact stdout match |
+| `assert_output --partial "text"` | stdout contains text |
+| `assert_output --regexp "pat"` | stdout matches regex |
+| `refute_output --partial "text"` | stdout does NOT contain text |
+
+---
+
 ## What works now vs later phases
 
 | Capability | Status |
