@@ -93,6 +93,54 @@ max_agents: 2
 
 Only the keys you include here override the defaults. Anything not listed falls through to `fleet.config.yml`.
 
+### Config field reference
+
+| Field | Default | Description |
+|---|---|---|
+| `host` | `localhost` | Label for this machine. Tasks with a matching `host` field are only run here. |
+| `repos_root` | `../fleet-repos` | Path to the directory containing your cloned repos. Relative paths are resolved from the fleet repo root. |
+| `max_agents` | `3` | Maximum number of concurrent agent tmux sessions. Guard blocks spawn when this is reached. |
+| `claude_bin` | `claude` | Name or path of the Claude Code binary. Override per persona for multi-account setups. |
+| `work_repo_prefix` | _(unset)_ | Comma-separated repo name prefixes that require a specific Claude binary. Guard kills sessions where a work repo runs under the default binary. |
+| `budget.max_sessions_per_day` | `25` | Hard cap on total Claude sessions per UTC day. Guard stops spawn once reached. |
+| `budget.daily_budget_tokens` | _(unset)_ | Soft token cap per UTC day (input + output). Set after one week of usage data. Guard warns at `warn_at_percent`%. |
+| `budget.daily_budget_usd` | _(unset)_ | Alternative to `daily_budget_tokens` when billing by USD (API key users). |
+| `budget.warn_at_percent` | `80` | Percent of the daily token/USD budget at which guard logs a warning. |
+| `schedule.spawn` | `*/5 9-18 * * 1-5` | Cron expression for how often spawn runs (every 5 min, 9 am–6 pm, weekdays). |
+| `schedule.guard` | `*/5 * * * *` | Cron expression for guard (every 5 min, always). |
+| `schedule.intake` | `*/15 9-18 * * 1-5` | Cron expression for intake adapters. |
+| `schedule.kb_sync` | `0 7 * * 1-5` | Cron expression for KB sync (07:00 weekdays). |
+
+---
+
+## Daily workflow
+
+The normal loop once the fleet is installed:
+
+```bash
+# 1. Create a task (new CLI — no file editing needed)
+fleet task new --id review-pr-42 --persona reviewer --repo app \
+  --body "Review feature/add-payments against main. Focus: data integrity, N+1 queries."
+
+# 2. Trigger immediately (or wait for the 5-minute cron)
+fleet now
+
+# 3. Watch what's running
+fleet tasks --status doing
+
+# 4. Check when it finishes
+fleet tasks --status done
+
+# 5. Read the output
+cat results/review-pr-42.md
+```
+
+To re-run a task after adding feedback:
+
+```bash
+fleet task edit review-pr-42 status todo   # resets it; cron will pick it up again
+```
+
 ---
 
 ## Three workflows ready to use
@@ -102,20 +150,19 @@ Only the keys you include here override the defaults. Anything not listed falls 
 No repo needed. Claude writes output to `results/<id>.md`.
 
 ```bash
-cat > tasks/brainstorm-001.md << 'EOF'
----
-id: brainstorm-001
-status: todo
-persona: general
-priority: normal
-workspace: scratch
----
-Brainstorm 10 product ideas for a developer productivity tool that works
+fleet task new --id brainstorm-001 --persona general \
+  --body "Brainstorm 10 product ideas for a developer productivity tool that works
 offline. For each idea include: the problem it solves, who pays for it,
-and one technical risk.
-EOF
+and one technical risk."
 
-bin/fleet now
+fleet now
+```
+
+Or pipe a longer prompt from a file:
+
+```bash
+cat prompt.txt | fleet task new --id brainstorm-001 --persona general
+fleet now
 ```
 
 Result appears in `results/brainstorm-001.md`.
@@ -130,23 +177,12 @@ Claude reads the repo and produces a structured findings report.
 # Clone the repo into repos_root first (default: ../fleet-repos)
 git clone git@github.com:your-org/app ../fleet-repos/app
 
-cat > tasks/review-pr-42.md << 'EOF'
----
-id: review-pr-42
-status: todo
-persona: reviewer
-priority: normal
-workspace: repo-ro
-repo: app
----
-Review the diff on branch feature/add-payments against main.
-
+fleet task new --id review-pr-42 --persona reviewer --workspace repo-ro --repo app \
+  --body "Review the diff on branch feature/add-payments against main.
   git diff main..feature/add-payments
+Focus: data integrity, missing validation, N+1 queries."
 
-Focus: data integrity, missing validation, N+1 queries.
-EOF
-
-bin/fleet now
+fleet now
 ```
 
 Result in `results/review-pr-42.md` — one block per file with labelled findings.
@@ -160,26 +196,15 @@ Claude works on an isolated git worktree (its own branch), commits its changes, 
 ```bash
 git clone git@github.com:your-org/app ../fleet-repos/app
 
-cat > tasks/code-001.md << 'EOF'
----
-id: code-001
-status: todo
-persona: coder
-priority: normal
-workspace: worktree
-repo: app
----
-Add input validation to the user registration endpoint.
-
+fleet task new --id code-001 --persona coder --workspace worktree --repo app \
+  --body "Add input validation to the user registration endpoint.
 - Email must match RFC 5322 format
 - Password must be at least 12 characters
 - Return 422 with a structured error body on failure
 - Add a test for each validation rule
+The endpoint is in src/controllers/auth.rb around line 45."
 
-The endpoint is in src/controllers/auth.rb around line 45.
-EOF
-
-bin/fleet now
+fleet now
 ```
 
 Claude commits its changes on branch `agent/code-001`. Review with:
@@ -267,19 +292,37 @@ Guard kills any session where a work repo runs under the default binary.
 
 ---
 
+## Personas
+
+Each persona is a named agent profile with its own model, default workspace, and tool permissions. Pick the one that matches what you want Claude to do.
+
+| Persona | Model | Default workspace | What it's for |
+|---|---|---|---|
+| `general` | Sonnet | `scratch` | Open-ended writing, research, brainstorming, Q&A. No repo access. |
+| `planner` | Sonnet | `scratch` | Breaking down work, writing specs, producing structured plans. Read-only git history. |
+| `reviewer` | Sonnet | `repo-ro` | Code review, audit, diff analysis. Full repo read; all write tools blocked. |
+| `coder` | Opus | `worktree` | Implementing changes. Works in an isolated git worktree; can read, write, edit, and `git commit` (no push). |
+| `prod-support` | Opus | `scratch` | Incident diagnosis, log analysis, runbook execution. Read-only repo and grep access. |
+
+When in doubt, use `general` for anything that doesn't touch a repo and `coder` for anything that does.
+
+---
+
 ## Task reference
 
 **Frontmatter fields:**
 
 | Field | Values | Notes |
 |---|---|---|
-| `id` | any slug | must be unique |
-| `status` | `todo` `doing` `done` `blocked` | only mutate via `bin/task-set` |
-| `persona` | `general` `reviewer` `coder` `prod-support` `planner` | |
-| `priority` | `high` `normal` | high tasks claimed first |
+| `id` | any slug | must be unique; also the tmux session suffix |
+| `status` | `todo` `doing` `done` `blocked` `stale` | mutate with `fleet task edit <id> status <value>` |
+| `persona` | `general` `reviewer` `coder` `prod-support` `planner` | see Personas section above |
+| `priority` | `high` `normal` | high tasks are claimed first by spawn |
 | `workspace` | `scratch` `repo-ro` `repo` `worktree` | see below |
-| `repo` | folder name under `repos_root` | required for repo workspaces |
-| `host` | machine label | omit to run on any host |
+| `repo` | folder name under `repos_root` | required for `repo-ro`, `repo`, `worktree` |
+| `host` | machine label from `fleet.config.local.yml` | omit to run on any host |
+| `attempts` | integer | set automatically by guard; do not edit manually |
+| `source` | any string | informational; `manual` for hand-created tasks |
 
 **Workspace modes:**
 
@@ -294,18 +337,29 @@ Guard kills any session where a work repo runs under the default binary.
 
 ```
 todo → doing → done
-           ↓ session crash, up to 3 attempts
-         todo → blocked
+           ↓ session crash
+         todo  (guard retries up to 3 times)
+           ↓ 3rd failure
+        blocked
 ```
 
-To add feedback and re-run: append a `## Feedback` section and set `status: todo`.
+To re-run with feedback:
+
+```bash
+fleet task edit <id> status todo   # guard will retry on next cron tick
+# Or add notes to the task body first:
+fleet task show <id>               # see current content
+fleet task edit <id> status todo
+```
 
 ---
 
 ## CLI
 
+### Inspection commands
+
 ```
-fleet tasks   [--status todo|doing|done|blocked] [--persona <p>] [--host <h>]
+fleet tasks   [--status todo|doing|done|blocked|stale] [--persona <p>] [--host <h>]
 fleet agents
 fleet adapters
 fleet cron
@@ -317,6 +371,22 @@ fleet now
 ```
 
 Exit codes: `0` ok · `2` degraded (fleet still runs) · `3` stopped by guard.
+
+**`fleet now`** manually triggers `bin/spawn` with a 30-second debounce — running it twice in quick succession only fires once.
+
+### Task CRUD commands
+
+```
+fleet task new    [--id <id>] [--persona <p>] [--priority normal|high]
+                  [--workspace <ws>] [--repo <r>] [--host <h>] [--body <text>]
+fleet task show   <id>
+fleet task edit   <id> <field> <value>
+fleet task delete <id> [--force]
+fleet task done   <id>
+fleet task block  <id>
+```
+
+`fleet task new` without `--id` auto-generates one from the current timestamp. Without `--body` it reads from stdin. Without `--workspace` it infers the workspace from the persona's default.
 
 ---
 
@@ -335,7 +405,7 @@ git submodule update --init --recursive
 ### Running the tests
 
 ```bash
-tests/run                          # run all 50 tests
+tests/run                          # run all tests
 tests/run tests/guard.bats         # run a single file
 tests/run --filter "orphan"        # run tests whose name matches a pattern
 ```
@@ -351,7 +421,8 @@ tests/
     common.bash       # shared make_fleet_root / make_task helpers
   lib.bats            # bin/lib.sh — config_get, task_get, now_ts
   task_set.bats       # bin/task-set
-  fleet_cli.bats      # bin/fleet (all subcommands)
+  fleet_cli.bats      # bin/fleet (inspection subcommands)
+  task_crud.bats      # bin/fleet task (CRUD subcommands)
   guard.bats          # bin/guard — orphan recovery, budget blocking
   spawn.bats          # bin/spawn — task dispatch
   now.bats            # bin/now — debounce logic
