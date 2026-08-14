@@ -356,9 +356,10 @@ fleet task edit <id> status todo
 
 ## CLI
 
-### Inspection commands
+### Inspection
 
 ```
+fleet config                                             # all config files + cron + pause status
 fleet tasks   [--status todo|doing|done|blocked|stale] [--persona <p>] [--host <h>]
 fleet agents
 fleet adapters
@@ -367,14 +368,11 @@ fleet logs    [<job>] [-n <lines>]
 fleet usage   [--since <Nd>]
 fleet budget
 fleet doctor
-fleet now
 ```
 
-Exit codes: `0` ok · `2` degraded (fleet still runs) · `3` stopped by guard.
+**`fleet config`** is the single place to inspect everything: both config files, `.env` presence, whether the fleet is paused, and the effective cron schedule plus whether cron/launchd jobs are actually installed.
 
-**`fleet now`** manually triggers `bin/spawn` with a 30-second debounce — running it twice in quick succession only fires once.
-
-### Task CRUD commands
+### Task CRUD
 
 ```
 fleet task new    [--id <id>] [--persona <p>] [--priority normal|high]
@@ -387,6 +385,21 @@ fleet task block  <id>
 ```
 
 `fleet task new` without `--id` auto-generates one from the current timestamp. Without `--body` it reads from stdin. Without `--workspace` it infers the workspace from the persona's default.
+
+### Triggering and safety
+
+```
+fleet now                  # manually trigger spawn (30-second debounce)
+fleet pause                # stop spawn + guard without touching cron
+fleet resume               # lift the pause
+fleet kill <id>|--all      # kill session(s) and reset task(s) to todo
+fleet halt                 # pause + kill --all in one command
+fleet uninstall [--purge]  # remove cron/launchd jobs and runtime files
+```
+
+**`fleet now`** triggers `bin/spawn` once immediately with a 30-second debounce — running it twice in quick succession only fires once.
+
+Exit codes: `0` ok · `2` degraded (fleet still runs) · `3` stopped by guard.
 
 ---
 
@@ -423,6 +436,7 @@ tests/
   task_set.bats       # bin/task-set
   fleet_cli.bats      # bin/fleet (inspection subcommands)
   task_crud.bats      # bin/fleet task (CRUD subcommands)
+  safety.bats         # bin/fleet pause/resume/kill/halt + spawn/guard lockfile
   guard.bats          # bin/guard — orphan recovery, budget blocking
   spawn.bats          # bin/spawn — task dispatch
   now.bats            # bin/now — debounce logic
@@ -474,6 +488,60 @@ Key assertions from bats-assert:
 | GitLab MR / Jira intake | 🔜 Phase 5 |
 | KB sync | 🔜 Phase 5 |
 | Coder multi-phase orchestration | 🔜 Phase 5 |
+
+---
+
+## Incident response
+
+If something goes wrong — a runaway agent, unexpected spend, a bad task prompt — use the tier that matches the severity. After any incident, `fleet config` gives you the full picture in one command.
+
+### Tier 1 — Pause scheduling (agents finish naturally, nothing new starts)
+
+```bash
+fleet pause
+```
+
+Spawn and guard check for a `.paused` lockfile at startup and exit immediately if it exists. Cron keeps firing but does nothing. Running agents complete normally.
+
+```bash
+fleet resume   # lift when ready
+```
+
+### Tier 2 — Halt everything (kill running agents immediately)
+
+```bash
+fleet halt
+```
+
+Creates `.paused` **and** kills every `fleet-*` tmux session immediately. All `doing` tasks are reset to `todo` so they can be retried after you resume.
+
+```bash
+fleet resume   # re-enable scheduling; todo tasks will be picked up on the next cron tick
+```
+
+To kill a single agent without pausing the rest of the fleet:
+
+```bash
+fleet kill <id>    # kills fleet-<id> and resets its task to todo
+```
+
+### Tier 3 — Uninstall (remove all automation)
+
+Use when you want to tear down the fleet entirely or move it to a different machine. Removes the `~/.local/bin/fleet` symlink, all cron/launchd jobs, and all runtime files (`.env`, `tasks/`, `logs/`, `scratch/`, `usage.csv`). Source files and `results/` are preserved.
+
+```bash
+./uninstall          # prompts for confirmation
+./uninstall --force  # skip prompt
+./uninstall --purge  # also delete the repo directory
+```
+
+| Situation | Command |
+|---|---|
+| Suspicious task output, want to investigate | `fleet pause` then read `results/` and logs |
+| Agent consuming too many tokens / crashed in a loop | `fleet halt` |
+| One agent gone wrong, others healthy | `fleet kill <id>` |
+| Move fleet to a different machine | `./uninstall` → re-clone → `./install` |
+| Full removal | `./uninstall --purge --force` |
 
 ---
 
