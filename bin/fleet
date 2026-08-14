@@ -17,7 +17,8 @@ usage() {
   cat >&2 <<EOF
 usage: fleet <command> [options]
 
-commands:
+inspection:
+  config
   tasks   [--status <s>] [--persona <p>] [--host <h>]
   agents
   adapters
@@ -26,10 +27,37 @@ commands:
   usage   [--since <Nd>]
   budget
   doctor
+
+task crud:
+  task    new|show|edit|delete|done|block
+
+safety:
+  pause
+  resume
+  kill    <id>|--all
+  halt
+
+other:
   now
   uninstall [--purge] [--force]
 
 exit codes: 0 ok  1 usage error  2 degraded  3 fleet stopped
+EOF
+  exit 1
+}
+
+task_usage() {
+  cat >&2 <<EOF
+usage: fleet task <subcommand> [options]
+
+subcommands:
+  new    [--id <id>] [--persona <p>] [--priority <pri>] [--workspace <ws>]
+         [--repo <r>] [--host <h>] [--body <text>]
+  show   <id>
+  edit   <id> <field> <value>
+  delete <id> [--force]
+  done   <id>
+  block  <id>
 EOF
   exit 1
 }
@@ -287,12 +315,320 @@ doctor)
   exit "${overall}"
   ;;
 
+config)
+  echo "=== fleet.config.yml (defaults) ==="
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    cat "${CONFIG_FILE}"
+  else
+    echo "  (not found)"
+  fi
+  echo ""
+  echo "=== fleet.config.local.yml (local overrides) ==="
+  if [[ -f "${LOCAL_CONFIG_FILE}" ]]; then
+    cat "${LOCAL_CONFIG_FILE}"
+  else
+    echo "  (not found — run ./install to create it)"
+  fi
+  echo ""
+  echo "=== .env ==="
+  if [[ -f "${ENV_FILE}" ]]; then
+    echo "  (present — contents hidden)"
+  else
+    echo "  (not found — copy from .env.example)"
+  fi
+  echo ""
+  echo "=== pause status ==="
+  PAUSE_FILE="${FLEET_ROOT}/.paused"
+  if [[ -f "${PAUSE_FILE}" ]]; then
+    paused_ts=$(python3 -c "
+import os, datetime
+t = os.path.getmtime('${PAUSE_FILE}')
+print(datetime.datetime.utcfromtimestamp(t).strftime('%Y-%m-%dT%H:%M:%SZ'))
+" 2>/dev/null || echo "unknown")
+    echo "  PAUSED since ${paused_ts} — run 'fleet resume' to lift"
+  else
+    echo "  active (not paused)"
+  fi
+  echo ""
+  echo "=== effective schedule ==="
+  for job in spawn guard intake kb_sync; do
+    key="schedule.${job}"
+    expr=$(config_get "${key}" "")
+    label="${job//_/-}"
+    if [[ -n "${expr}" ]]; then
+      echo "  ${label}: ${expr}"
+    else
+      echo "  ${label}: (unset)"
+    fi
+  done
+  echo ""
+  echo "=== cron / launchd installed ==="
+  if [[ "$(uname)" == "Darwin" ]]; then
+    found=0
+    for job in spawn guard intake kb-sync; do
+      plist="${HOME}/Library/LaunchAgents/com.fleet.${job}.plist"
+      [[ -f "${plist}" ]] && { echo "  launchd: com.fleet.${job}"; found=1; }
+    done
+    (( found == 0 )) && echo "  (none — run ./install)"
+  elif command -v crontab &>/dev/null; then
+    crontab -l 2>/dev/null | grep -E "fleet/(spawn|guard|intake|kb-sync)" || echo "  (none — run ./install)"
+  else
+    echo "  (crontab not available)"
+  fi
+  ;;
+
+pause)
+  PAUSE_FILE="${FLEET_ROOT}/.paused"
+  if [[ -f "${PAUSE_FILE}" ]]; then
+    echo "already paused — run 'fleet resume' to lift"
+  else
+    touch "${PAUSE_FILE}"
+    echo "fleet paused — spawn and guard will skip until 'fleet resume'"
+  fi
+  ;;
+
+resume)
+  PAUSE_FILE="${FLEET_ROOT}/.paused"
+  if [[ ! -f "${PAUSE_FILE}" ]]; then
+    echo "not paused"
+  else
+    rm -f "${PAUSE_FILE}"
+    echo "fleet resumed"
+  fi
+  ;;
+
+kill)
+  [[ $# -lt 1 ]] && { echo "fleet kill: usage: fleet kill <id>|--all" >&2; exit 1; }
+  KILL_TARGET="${1}"
+
+  _kill_one() {
+    local task_id="${1}"
+    local session="fleet-${task_id}"
+    local task_file="${TASKS_DIR}/${task_id}.md"
+    if tmux has-session -t "${session}" 2>/dev/null; then
+      tmux kill-session -t "${session}" 2>/dev/null || true
+      echo "killed: ${session}"
+    else
+      echo "no session: ${session}"
+    fi
+    if [[ -f "${task_file}" ]]; then
+      "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+      echo "reset to todo: ${task_id}"
+    fi
+  }
+
+  if [[ "${KILL_TARGET}" == "--all" ]]; then
+    killed_count=0
+    while IFS= read -r line; do
+      session=$(echo "${line}" | awk -F: '{print $1}')
+      task_id="${session#fleet-}"
+      _kill_one "${task_id}"
+      (( killed_count++ )) || true
+    done < <(tmux ls 2>/dev/null | grep "^fleet-" || true)
+    [[ "${killed_count}" -eq 0 ]] && echo "(no agent sessions running)"
+    # Also reset any doing tasks that had no live session (already-exited agents).
+    for f in "${TASKS_DIR}"/*.md; do
+      [[ -f "${f}" ]] || continue
+      s=$(task_get "${f}" "status"); [[ "${s}" == "doing" ]] || continue
+      "${SCRIPT_DIR}/task-set" "${f}" "status" "todo"
+      echo "reset to todo: $(task_get "${f}" "id")"
+    done
+  else
+    _kill_one "${KILL_TARGET}"
+  fi
+  ;;
+
+halt)
+  PAUSE_FILE="${FLEET_ROOT}/.paused"
+  touch "${PAUSE_FILE}"
+  echo "scheduling paused"
+
+  killed_count=0
+  while IFS= read -r line; do
+    session=$(echo "${line}" | awk -F: '{print $1}')
+    task_id="${session#fleet-}"
+    tmux kill-session -t "${session}" 2>/dev/null || true
+    echo "killed: ${session}"
+    task_file="${TASKS_DIR}/${task_id}.md"
+    [[ -f "${task_file}" ]] && "${SCRIPT_DIR}/task-set" "${task_file}" "status" "todo"
+    (( killed_count++ )) || true
+  done < <(tmux ls 2>/dev/null | grep "^fleet-" || true)
+
+  # Reset any doing tasks that had no live session (already-exited agents).
+  reset_count=0
+  for f in "${TASKS_DIR}"/*.md; do
+    [[ -f "${f}" ]] || continue
+    s=$(task_get "${f}" "status"); [[ "${s}" == "doing" ]] || continue
+    "${SCRIPT_DIR}/task-set" "${f}" "status" "todo"
+    (( reset_count++ )) || true
+  done
+
+  echo "killed ${killed_count} session(s), reset ${reset_count} orphaned task(s)"
+  echo "run 'fleet resume' to re-enable scheduling"
+  ;;
+
 now)
   exec "${SCRIPT_DIR}/now"
   ;;
 
 uninstall)
   exec "${FLEET_ROOT}/uninstall" "$@"
+  ;;
+
+task)
+  [[ $# -lt 1 ]] && task_usage
+  SUBCMD="${1}"; shift
+
+  VALID_PERSONAS="coder reviewer planner general prod-support"
+  VALID_PRIORITIES="normal high"
+  VALID_WORKSPACES="worktree repo repo-ro scratch"
+  VALID_STATUSES="todo doing blocked stale done"
+
+  _task_file_for() {
+    echo "${TASKS_DIR}/${1}.md"
+  }
+
+  _require_task() {
+    local f; f=$(_task_file_for "${1}")
+    [[ -f "${f}" ]] || { echo "fleet task: no task with id '${1}'" >&2; exit 1; }
+    echo "${f}"
+  }
+
+  case "${SUBCMD}" in
+
+  new)
+    TASK_ID=""
+    TASK_PERSONA="general"
+    TASK_PRIORITY="normal"
+    TASK_WORKSPACE=""
+    TASK_REPO=""
+    TASK_HOST=""
+    TASK_BODY=""
+    while [[ $# -gt 0 ]]; do
+      case "${1}" in
+        --id)        TASK_ID="${2}";        shift 2 ;;
+        --persona)   TASK_PERSONA="${2}";   shift 2 ;;
+        --priority)  TASK_PRIORITY="${2}";  shift 2 ;;
+        --workspace) TASK_WORKSPACE="${2}"; shift 2 ;;
+        --repo)      TASK_REPO="${2}";      shift 2 ;;
+        --host)      TASK_HOST="${2}";      shift 2 ;;
+        --body)      TASK_BODY="${2}";      shift 2 ;;
+        *) echo "fleet task new: unknown option: ${1}" >&2; exit 1 ;;
+      esac
+    done
+
+    # Validate persona and priority.
+    if [[ -n "${TASK_PERSONA}" ]] && ! echo "${VALID_PERSONAS}" | grep -qw "${TASK_PERSONA}"; then
+      echo "fleet task new: invalid persona '${TASK_PERSONA}'. Valid: ${VALID_PERSONAS}" >&2; exit 1
+    fi
+    if ! echo "${VALID_PRIORITIES}" | grep -qw "${TASK_PRIORITY}"; then
+      echo "fleet task new: invalid priority '${TASK_PRIORITY}'. Valid: ${VALID_PRIORITIES}" >&2; exit 1
+    fi
+    if [[ -n "${TASK_WORKSPACE}" ]] && ! echo "${VALID_WORKSPACES}" | grep -qw "${TASK_WORKSPACE}"; then
+      echo "fleet task new: invalid workspace '${TASK_WORKSPACE}'. Valid: ${VALID_WORKSPACES}" >&2; exit 1
+    fi
+
+    # Auto-generate id if not provided.
+    if [[ -z "${TASK_ID}" ]]; then
+      TASK_ID="task-$(date -u +%Y%m%d-%H%M%S)"
+    fi
+
+    TASK_FILE=$(_task_file_for "${TASK_ID}")
+    if [[ -f "${TASK_FILE}" ]]; then
+      echo "fleet task new: task '${TASK_ID}' already exists" >&2; exit 1
+    fi
+
+    # Infer workspace from persona if not given.
+    if [[ -z "${TASK_WORKSPACE}" ]]; then
+      PERSONA_CONFIG="${FLEET_ROOT}/personas/${TASK_PERSONA}/config.json"
+      if [[ -f "${PERSONA_CONFIG}" ]]; then
+        TASK_WORKSPACE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('workspace','scratch'))" "${PERSONA_CONFIG}" 2>/dev/null || echo "scratch")
+      else
+        TASK_WORKSPACE="scratch"
+      fi
+    fi
+
+    # Read body from stdin if not provided via --body.
+    if [[ -z "${TASK_BODY}" ]]; then
+      if [[ ! -t 0 ]]; then
+        TASK_BODY=$(cat)
+      fi
+    fi
+
+    mkdir -p "${TASKS_DIR}"
+
+    {
+      echo "---"
+      echo "id: ${TASK_ID}"
+      echo "status: todo"
+      echo "persona: ${TASK_PERSONA}"
+      echo "priority: ${TASK_PRIORITY}"
+      echo "workspace: ${TASK_WORKSPACE}"
+      [[ -n "${TASK_REPO}" ]]  && echo "repo: ${TASK_REPO}"
+      [[ -n "${TASK_HOST}" ]]  && echo "host: ${TASK_HOST}"
+      echo "attempts: 0"
+      echo "source: manual"
+      echo "---"
+      if [[ -n "${TASK_BODY}" ]]; then
+        echo "${TASK_BODY}"
+      fi
+    } > "${TASK_FILE}"
+
+    echo "created: ${TASK_FILE}"
+    ;;
+
+  show)
+    [[ $# -lt 1 ]] && { echo "fleet task show: missing <id>" >&2; exit 1; }
+    f=$(_require_task "${1}")
+    cat "${f}"
+    ;;
+
+  edit)
+    [[ $# -lt 3 ]] && { echo "fleet task edit: usage: fleet task edit <id> <field> <value>" >&2; exit 1; }
+    EDIT_ID="${1}"; EDIT_FIELD="${2}"; EDIT_VALUE="${3}"
+    f=$(_require_task "${EDIT_ID}")
+    # Validate status values when editing the status field.
+    if [[ "${EDIT_FIELD}" == "status" ]] && ! echo "${VALID_STATUSES}" | grep -qw "${EDIT_VALUE}"; then
+      echo "fleet task edit: invalid status '${EDIT_VALUE}'. Valid: ${VALID_STATUSES}" >&2; exit 1
+    fi
+    "${SCRIPT_DIR}/task-set" "${f}" "${EDIT_FIELD}" "${EDIT_VALUE}"
+    echo "updated ${EDIT_ID}: ${EDIT_FIELD}=${EDIT_VALUE}"
+    ;;
+
+  delete)
+    [[ $# -lt 1 ]] && { echo "fleet task delete: missing <id>" >&2; exit 1; }
+    DEL_ID="${1}"; shift
+    FORCE=0
+    [[ $# -gt 0 && "${1}" == "--force" ]] && FORCE=1
+    f=$(_require_task "${DEL_ID}")
+    if [[ "${FORCE}" -eq 0 ]]; then
+      printf "delete task '%s'? [y/N] " "${DEL_ID}"
+      read -r answer </dev/tty
+      [[ "${answer}" =~ ^[Yy]$ ]] || { echo "aborted"; exit 0; }
+    fi
+    rm "${f}"
+    echo "deleted: ${DEL_ID}"
+    ;;
+
+  done)
+    [[ $# -lt 1 ]] && { echo "fleet task done: missing <id>" >&2; exit 1; }
+    f=$(_require_task "${1}")
+    "${SCRIPT_DIR}/task-set" "${f}" "status" "done"
+    echo "marked done: ${1}"
+    ;;
+
+  block)
+    [[ $# -lt 1 ]] && { echo "fleet task block: missing <id>" >&2; exit 1; }
+    f=$(_require_task "${1}")
+    "${SCRIPT_DIR}/task-set" "${f}" "status" "blocked"
+    echo "marked blocked: ${1}"
+    ;;
+
+  *)
+    echo "fleet task: unknown subcommand: ${SUBCMD}" >&2
+    task_usage
+    ;;
+  esac
   ;;
 
 *)

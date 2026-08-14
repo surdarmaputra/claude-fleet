@@ -12,6 +12,11 @@ CLAUDE_BIN=$(config_get "claude_bin" "${CLAUDE_BIN:-claude}")
 REPOS_ROOT=$(config_get "repos_root" "${FLEET_ROOT}/../fleet-repos")
 PERSONAS_DIR="${FLEET_ROOT}/personas"
 
+if [[ -f "${FLEET_ROOT}/.paused" ]]; then
+  log_heartbeat "spawn" "0" "paused=true"
+  exit 0
+fi
+
 claimed=0
 exit_code=0
 
