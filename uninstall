@@ -33,8 +33,8 @@ Options:
 
 Without --purge the repo directory is left clean and intact: only
 gitignored runtime files (.env, fleet.config.local.yml, logs/, tasks/,
-scratch/, usage.csv) and system integrations (symlink, cron / launchd)
-are removed. Git-tracked source files are untouched.
+scratch/, usage.csv, .now.lock, untracked skills) and system integrations
+(symlink, cron / launchd) are removed. Git-tracked source files are untouched.
 EOF
       exit 0
       ;;
@@ -61,8 +61,9 @@ if [[ "${FORCE}" != true ]]; then
   if [[ "${PURGE}" == true ]]; then
     echo "  This will delete ${FLEET_ROOT} and everything in it."
   else
-    echo "  This will remove the fleet symlink, cron/launchd jobs, and"
-    echo "  gitignored runtime files inside ${FLEET_ROOT}."
+    echo "  This will remove the fleet symlink, cron/launchd jobs, and gitignored"
+    echo "  runtime files (.env, fleet.config.local.yml, logs/, tasks/, scratch/,"
+    echo "  usage.csv, .now.lock, untracked skills) inside ${FLEET_ROOT}."
     echo "  Git-tracked source files will not be touched."
   fi
   echo ""

@@ -61,14 +61,31 @@ for task_file in "${CANDIDATES[@]}"; do
   workspace=$(task_get "${task_file}" "workspace")
   repo=$(task_get "${task_file}" "repo")
 
-  # Resolve persona config.
+  # Resolve persona directory: personas.local/<name>/ wins over personas/<name>/.
+  local_persona_dir="${FLEET_ROOT}/personas.local/${persona}"
   persona_dir="${PERSONAS_DIR}/${persona}"
-  if [[ ! -d "${persona_dir}" ]]; then
+  if [[ -d "${local_persona_dir}" ]]; then
+    # Complete persona override — use everything from personas.local/<name>/ as-is.
+    persona_dir="${local_persona_dir}"
+    persona_config="${persona_dir}/config.json"
+    persona_bin=$(python3 -c \
+      "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('bin',''))" \
+      "${persona_config}" 2>/dev/null || true)
+  elif [[ -d "${persona_dir}" ]]; then
+    # Tracked persona — config.local.json merges over config.json (local fields win).
+    persona_config="${persona_dir}/config.json"
+    persona_local_config="${persona_dir}/config.local.json"
+    persona_bin=$(python3 - "${persona_config}" "${persona_local_config}" <<'PY'
+import json, os, sys
+base = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
+ov   = json.load(open(sys.argv[2])) if os.path.exists(sys.argv[2]) else {}
+print({**base, **ov}.get('bin', ''))
+PY
+) 2>/dev/null || true
+  else
     echo "spawn: unknown persona '${persona}' for task ${task_id}, skipping" >&2
     continue
   fi
-  persona_config="${persona_dir}/config.json"
-  persona_bin=$(python3 -c "import json,sys; d=json.load(open('${persona_config}')); print(d.get('bin',''))" 2>/dev/null || true)
   [[ -z "${persona_bin}" ]] && persona_bin="${CLAUDE_BIN}"
 
   # Guard: work repo must use work binary.
@@ -129,6 +146,10 @@ for task_file in "${CANDIDATES[@]}"; do
   session_name="fleet-${task_id}"
   log_file="${FLEET_ROOT}/logs/agent-${task_id}.log"
   prompt_file="${persona_dir}/prompt.md"
+  # For tracked personas, prompt.local.md replaces prompt.md entirely.
+  if [[ "${persona_dir}" != "${local_persona_dir}" && -f "${persona_dir}/prompt.local.md" ]]; then
+    prompt_file="${persona_dir}/prompt.local.md"
+  fi
   result_file="${RESULTS_DIR}/${task_id}.md"
 
   launch_script="${SCRATCH_DIR}/${task_id}/.launch.sh"
