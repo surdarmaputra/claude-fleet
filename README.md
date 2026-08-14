@@ -36,11 +36,11 @@ fleet doctor
 
 ### Remove system integrations, keep the repo
 
-Removes the `~/.local/bin/fleet` symlink, cron / launchd jobs, and all
-gitignored runtime files (`.env`, `fleet.config.local.yml`, `logs/`, `tasks/`,
-`scratch/`, `usage.csv`). Git-tracked source files are untouched; `results/` is
-preserved. Use this when you cloned fleet to the wrong directory and want to
-move it elsewhere.
+Removes the `~/.local/bin/fleet` symlink, cron / launchd jobs, and gitignored
+runtime files: `.env`, `fleet.config.local.yml`, `logs/`, `tasks/`, `scratch/`,
+`usage.csv`, `.now.lock`, and untracked skills in `.claude/skills/`. Git-tracked
+source files are untouched. Use this when you cloned fleet to the wrong directory
+and want to move it elsewhere.
 
 ```bash
 ./uninstall          # prompts for confirmation
@@ -285,13 +285,13 @@ claude config set --profile personal account.email you@personal.com
 alias claude-work='claude --profile work'
 ```
 
-Then override the binary per persona in `personas/<name>/config.json`:
+Then override the binary per persona without touching tracked files — create `personas/<name>/config.local.json` (gitignored):
 
 ```json
 { "bin": "claude-work" }
 ```
 
-And set `work_repo_prefix` in `fleet.config.yml` so guard can enforce the mapping:
+And set `work_repo_prefix` in `fleet.config.local.yml` so guard can enforce the mapping:
 
 ```yaml
 work_repo_prefix: app,api
@@ -565,7 +565,7 @@ fleet kill <id>    # kills fleet-<id> and resets its task to todo
 
 ### Tier 3 — Uninstall (remove all automation)
 
-Use when you want to tear down the fleet entirely or move it to a different machine. Removes the `~/.local/bin/fleet` symlink, all cron/launchd jobs, and all runtime files (`.env`, `tasks/`, `logs/`, `scratch/`, `usage.csv`). Source files and `results/` are preserved.
+Use when you want to tear down the fleet entirely or move it to a different machine. Removes the `~/.local/bin/fleet` symlink, all cron/launchd jobs, and gitignored runtime files (`.env`, `fleet.config.local.yml`, `tasks/`, `logs/`, `scratch/`, `usage.csv`, untracked skills). Git-tracked source files are untouched.
 
 ```bash
 ./uninstall          # prompts for confirmation
